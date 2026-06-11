@@ -3,6 +3,7 @@ using Microsoft.Xna.Framework.Graphics;
 using StardewModdingAPI;
 using StardewModdingAPI.Events;
 using StardewValley;
+using StardewValley.Inventories;
 using StardewValley.Menus;
 using StardewValley.Objects;
 
@@ -126,22 +127,39 @@ internal sealed class MachineRefill
         if (!location.objects.TryGetValue(new Vector2(this.machineTile.X, this.machineTile.Y), out StardewValley.Object? machine))
             return;
 
-        // Try every chest: the same location's chests first (kegs next to their shed chest),
-        // then the farm's. AttemptAutoLoad consumes inputs + fuel and starts the machine.
-        foreach (Chest chest in GetSourceChests(location))
+        // Feed the loader a COMBINED view over every chest (the Item instances are shared, so
+        // consumption hits the real stacks) — ore in one chest and coal in another both count.
+        List<Chest> chests = GetSourceChests(location);
+        var combined = new Inventory();
+        foreach (Chest chest in chests)
         {
-            if (machine.heldObject.Value != null || machine.MinutesUntilReady > 0)
-                break; // already loaded
-
-            if (machine.AttemptAutoLoad(chest.GetItemsForPlayer(), Game1.player))
+            foreach (Item? item in chest.GetItemsForPlayer())
             {
-                Game1.addHUDMessage(HUDMessage.ForCornerTextbox($"已为「{machine.DisplayName}」补货并启动。"));
-                this.monitor.Log($"Refilled {machine.QualifiedItemId} at {this.machineTile} from a chest.", LogLevel.Trace);
-                return;
+                if (item != null)
+                    combined.Add(item);
             }
         }
 
-        Game1.addHUDMessage(HUDMessage.ForCornerTextbox("箱子里没有这台机器需要的材料（原料和燃料要在同一个箱子里）。"));
+        if (machine.AttemptAutoLoad(combined, Game1.player))
+        {
+            // Fully consumed stacks leave zero-stack ghosts behind in the source chests — sweep them.
+            foreach (Chest chest in chests)
+            {
+                IInventory items = chest.GetItemsForPlayer();
+                for (int i = items.Count - 1; i >= 0; i--)
+                {
+                    if (items[i] != null && items[i].Stack <= 0)
+                        items[i] = null;
+                }
+                items.RemoveEmptySlots();
+            }
+
+            Game1.addHUDMessage(HUDMessage.ForCornerTextbox($"已为「{machine.DisplayName}」补货并启动。"));
+            this.monitor.Log($"Refilled {machine.QualifiedItemId} at {this.machineTile} from chests.", LogLevel.Trace);
+            return;
+        }
+
+        Game1.addHUDMessage(HUDMessage.ForCornerTextbox("箱子里没有这台机器需要的材料。"));
     }
 
     private static List<Chest> GetSourceChests(GameLocation location)
