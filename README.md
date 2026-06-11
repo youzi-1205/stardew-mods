@@ -30,7 +30,7 @@ SMAPI 安装结束时会显示一行启动参数（类似 `"C:\...\Stardew Valle
 
 1. 打开本仓库的 [Releases 页面](https://github.com/youzi-1205/stardew-mods/releases)，下载想要的 mod zip（各 mod 互相独立，按需选择）
 2. 找到游戏的 `Mods` 文件夹：Steam 库 → 右键游戏 → **管理** → **浏览本地文件** → 进入 `Mods`
-3. 把 zip **解压**进去（一个 mod 一个文件夹，例如 `Mods\FarmServant\`）
+3. 把 zip **直接解压到 `Mods` 文件夹**——压缩包里自带 mod 文件夹，解压后自动变成 `Mods\FarmServant\` 这样的结构，**不需要手动新建任何文件夹**
 
 ### 第 4 步：启动游戏验证
 
