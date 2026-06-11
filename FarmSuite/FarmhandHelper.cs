@@ -41,7 +41,7 @@ internal sealed class ChestJunimo : JunimoHarvester
 /// game's own PathFindController (NPCs animate their walk cycle natively under a controller).</summary>
 internal sealed class FarmhandHelper
 {
-    private enum TaskKind { Water, Harvest, Fertilize, Plant, ChopTree, BreakStone, ClearWeeds, TendAnimals, Deliver, CollectMachine, CollectBuilding }
+    private enum TaskKind { Water, Harvest, Fertilize, Plant, ChopTree, BreakStone, ClearWeeds, TendAnimals, Deliver, CollectMachine, CollectBuilding, CutGrass }
 
     private sealed record FarmTask(TaskKind Kind, Point Tile, string? ItemId = null, string? LocationName = null);
 
@@ -547,6 +547,11 @@ internal sealed class FarmhandHelper
         int fiber = scratch.Count;
 
         scratch.Clear();
+        this.AddGrassTasks(scratch, farm, center, radius);
+        int grass = scratch.Count;
+        int haySpace = farm.GetHayCapacity() - farm.piecesOfHay.Value;
+
+        scratch.Clear();
         this.AddTreeTasks(scratch, farm, center, radius);
         int trees = scratch.Count;
 
@@ -571,6 +576,8 @@ internal sealed class FarmhandHelper
             responses.Add(new Response("wood", $"清木头（{wood} 处 → 树枝/木桩）"));
         if (fiber > 0)
             responses.Add(new Response("fiber", $"除草（{fiber} 处 → 纤维）"));
+        if (grass > 0)
+            responses.Add(new Response("grass", $"割草存干草（{grass} 丛，筒仓余 {haySpace}）"));
         if (trees > 0)
             responses.Add(new Response("trees", $"砍附近的树（{trees} 棵）"));
         responses.Add(new Response("daily", "全农场日常巡一遍"));
@@ -621,6 +628,9 @@ internal sealed class FarmhandHelper
                 break;
             case "fiber":
                 this.AddFiberTasks(this.tasks, farm, center, radius);
+                break;
+            case "grass":
+                this.AddGrassTasks(this.tasks, farm, center, radius);
                 break;
             case "trees":
                 this.AddTreeTasks(this.tasks, farm, center, radius);
@@ -847,6 +857,34 @@ internal sealed class FarmhandHelper
             var tile = new Point((int)pair.Key.X, (int)pair.Key.Y);
             if (IsWithin(tile, center, radius) && IsClearableWeed(pair.Value))
                 target.Add(new FarmTask(TaskKind.ClearWeeds, tile));
+        }
+    }
+
+    /// <summary>Hay source: scythe farm GRASS into the silo. Only queues roughly as many clumps as
+    /// the silo can absorb, so he never mows the whole pasture for nothing.</summary>
+    private void AddGrassTasks(List<FarmTask> target, Farm farm, Point? center, int radius)
+    {
+        if (!this.config().HelperCutsGrass)
+            return;
+
+        int space = farm.GetHayCapacity() - farm.piecesOfHay.Value;
+        if (space <= 0)
+            return;
+
+        int budget = space; // ~2 hay per clump at 50% odds; stay conservative
+        foreach (var pair in farm.terrainFeatures.Pairs)
+        {
+            if (budget <= 0)
+                break;
+            if (pair.Value is not Grass)
+                continue;
+
+            var tile = new Point((int)pair.Key.X, (int)pair.Key.Y);
+            if (!IsWithin(tile, center, radius))
+                continue;
+
+            target.Add(new FarmTask(TaskKind.CutGrass, tile));
+            budget -= 2;
         }
     }
 
@@ -1123,6 +1161,9 @@ internal sealed class FarmhandHelper
             TaskKind.CollectBuilding => task.LocationName != null
                 && Game1.getLocationFromName(task.LocationName) is GameLocation indoors
                 && indoors.objects.Values.Any(IsReadyMachine),
+            TaskKind.CutGrass => farm.terrainFeatures.TryGetValue(tile, out TerrainFeature? grassFeature)
+                && grassFeature is Grass
+                && farm.GetHayCapacity() - farm.piecesOfHay.Value > 0,
             _ => false,
         };
     }
@@ -1131,7 +1172,7 @@ internal sealed class FarmhandHelper
     {
         Farm farm = Game1.getFarm();
         if (task.Kind is TaskKind.ChopTree or TaskKind.BreakStone or TaskKind.ClearWeeds or TaskKind.TendAnimals
-            or TaskKind.Deliver or TaskKind.CollectMachine or TaskKind.CollectBuilding)
+            or TaskKind.Deliver or TaskKind.CollectMachine or TaskKind.CollectBuilding or TaskKind.CutGrass)
         {
             this.ExecuteUtilityTask(task, farm);
             return;
@@ -1279,6 +1320,21 @@ internal sealed class FarmhandHelper
                 if (farm.objects.TryGetValue(tile, out StardewValley.Object? farmMachine) && IsReadyMachine(farmMachine))
                     this.CollectMachineOutput(farmMachine, farm);
                 break;
+
+            case TaskKind.CutGrass:
+            {
+                if (farm.terrainFeatures.TryGetValue(tile, out TerrainFeature? grassFeature) && grassFeature is Grass grass)
+                {
+                    // Vanilla scythe cut: handles the hay roll and silo deposit internally.
+                    if (grass.performToolAction(this.GetHelperScythe(), 0, tile))
+                        farm.terrainFeatures.Remove(tile);
+
+                    bool siloHasRoom = farm.GetHayCapacity() - farm.piecesOfHay.Value > 0;
+                    if (siloHasRoom && farm.terrainFeatures.TryGetValue(tile, out TerrainFeature? still) && still is Grass)
+                        this.tasks.Add(task); // clump not finished: keep swinging
+                }
+                break;
+            }
 
             case TaskKind.CollectBuilding:
             {
@@ -1826,6 +1882,7 @@ internal sealed class FarmhandHelper
         {
             TaskKind.ChopTree or TaskKind.BreakStone => 650,
             TaskKind.ClearWeeds => 420,
+            TaskKind.CutGrass => 300,
             TaskKind.TendAnimals => 1000,
             TaskKind.Deliver => 350,
             TaskKind.CollectMachine => 400,
@@ -2098,7 +2155,7 @@ internal sealed class FarmhandHelper
             return;
         }
 
-        if (task.Kind is TaskKind.Harvest or TaskKind.ClearWeeds)
+        if (task.Kind is TaskKind.Harvest or TaskKind.ClearWeeds or TaskKind.CutGrass)
         {
             int frameIndex = WorkFrameIndex(progress, 6);
             int animation = GetWeaponAnimation(farmer.FacingDirection);
@@ -2120,7 +2177,7 @@ internal sealed class FarmhandHelper
             TaskKind.Water => this.GetHelperWateringCan(),
             TaskKind.ChopTree => this.GetHelperAxe(),
             TaskKind.BreakStone => this.GetHelperPickaxe(),
-            TaskKind.Harvest or TaskKind.ClearWeeds => this.GetHelperScythe(),
+            TaskKind.Harvest or TaskKind.ClearWeeds or TaskKind.CutGrass => this.GetHelperScythe(),
             _ => null,
         };
     }

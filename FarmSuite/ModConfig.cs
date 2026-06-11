@@ -56,6 +56,9 @@ internal sealed class ModConfig
     // covering machines on the farm and inside farm buildings (sheds, barns, greenhouse).
     public bool HelperCollectsMachines { get; set; } = true;
 
+    // Menu command: scythe farm grass into the silo as hay (only while the silo has room).
+    public bool HelperCutsGrass { get; set; } = true;
+
     // Show a "一键补货" button next to an empty machine: refills it from your chests and starts it.
     public bool MachineRefillButton { get; set; } = true;
 
