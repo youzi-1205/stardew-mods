@@ -1,0 +1,10 @@
+{
+  "Name": "Stock Overview",
+  "Author": "Codex",
+  "Version": "0.1.0",
+  "Description": "Press a key to see every item you own (inventory + all chests + fridges) with total counts and where they're stored.",
+  "UniqueID": "Codex.StockOverview",
+  "EntryDll": "StockOverview.dll",
+  "MinimumApiVersion": "4.0.0",
+  "UpdateKeys": []
+}

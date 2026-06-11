@@ -21,6 +21,7 @@ internal sealed class ModEntry : Mod
     private readonly Dictionary<string, int> pulled = new(StringComparer.OrdinalIgnoreCase);
     private readonly HashSet<string> announced = new(StringComparer.OrdinalIgnoreCase);
     private bool sessionActive;
+    private bool locationSession; // BoatTunnel-style: fronted on entry, returned on leaving
     private bool warnedNoSpace;
     private int tick;
 
@@ -28,16 +29,55 @@ internal sealed class ModEntry : Mod
     {
         helper.Events.Display.MenuChanged += this.OnMenuChanged;
         helper.Events.GameLoop.UpdateTicked += this.OnUpdateTicked;
+        helper.Events.Player.Warped += this.OnWarped;
         helper.Events.GameLoop.ReturnedToTitle += (_, _) =>
         {
             this.pulled.Clear();
             this.announced.Clear();
             this.sessionActive = false;
+            this.locationSession = false;
         };
+    }
+
+    /// <summary>Willy's boat repair checks your items the instant you CLICK a boat part (before any
+    /// dialogue), so front the materials when entering the boat tunnel and return them on leaving.</summary>
+    private void OnWarped(object? sender, WarpedEventArgs e)
+    {
+        if (!e.IsLocalPlayer)
+            return;
+
+        if (e.NewLocation?.Name == "BoatTunnel")
+        {
+            this.locationSession = true;
+            this.sessionActive = false;
+            this.pulled.Clear();
+            this.announced.Clear();
+            this.warnedNoSpace = false;
+
+            if (!Game1.MasterPlayer.hasOrWillReceiveMail("willyBoatFixed"))
+            {
+                if (!Game1.MasterPlayer.hasOrWillReceiveMail("willyBoatHull"))
+                    this.EnsureInInventory("(O)709", 200); // hardwood
+                if (!Game1.MasterPlayer.hasOrWillReceiveMail("willyBoatAnchor"))
+                    this.EnsureInInventory("(O)337", 5);   // iridium bars
+                if (!Game1.MasterPlayer.hasOrWillReceiveMail("willyBoatTicketMachine"))
+                    this.EnsureInInventory("(O)787", 5);   // battery packs
+            }
+        }
+        else if (this.locationSession)
+        {
+            this.ReturnLeftovers();
+            this.locationSession = false;
+        }
     }
 
     private void OnMenuChanged(object? sender, MenuChangedEventArgs e)
     {
+        // While a location session (boat tunnel) owns the pulled pool, menu open/close must not
+        // return the fronted materials mid-stay.
+        if (this.locationSession)
+            return;
+
         bool newRelevant = IsRelevantMenu(e.NewMenu);
         bool oldRelevant = IsRelevantMenu(e.OldMenu);
 
