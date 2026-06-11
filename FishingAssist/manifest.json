@@ -1,0 +1,10 @@
+{
+  "Name": "Fishing Assist",
+  "Author": "Codex",
+  "Version": "0.1.2",
+  "Description": "Helps the fishing minigame by keeping the fishing bar near the fish.",
+  "UniqueID": "Codex.FishingAssist",
+  "EntryDll": "FishingAssist.dll",
+  "MinimumApiVersion": "4.0.0",
+  "UpdateKeys": []
+}

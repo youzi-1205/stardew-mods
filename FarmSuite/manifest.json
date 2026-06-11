@@ -1,0 +1,10 @@
+{
+  "Name": "Farm Suite",
+  "Author": "Codex",
+  "Version": "0.1.13",
+  "Description": "Craft from all chests, a farmhand helper NPC, and a purchasable pickup truck.",
+  "UniqueID": "Codex.FarmSuite",
+  "EntryDll": "FarmSuite.dll",
+  "MinimumApiVersion": "4.0.0",
+  "UpdateKeys": []
+}

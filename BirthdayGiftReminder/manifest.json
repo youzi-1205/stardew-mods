@@ -1,0 +1,10 @@
+{
+  "Name": "Birthday Gift Reminder",
+  "Author": "Codex",
+  "Version": "0.1.0",
+  "Description": "Shows a morning reminder when a villager has a birthday, including loved and liked gifts from the game's own data.",
+  "UniqueID": "Codex.BirthdayGiftReminder",
+  "EntryDll": "BirthdayGiftReminder.dll",
+  "MinimumApiVersion": "4.0.0",
+  "UpdateKeys": []
+}

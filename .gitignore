@@ -1,0 +1,18 @@
+# Build outputs
+bin/
+obj/
+publish/
+*.user
+
+# Local tooling & SMAPI installers (not part of the mod sources)
+/.dotnet/
+/tools/
+/SMAPI-*/
+/SMAPI-*.zip
+/dotnet-install.ps1
+
+# Logs, packaged snapshots, art iteration backups
+*.log
+*-source.zip
+asset-backups/
+**/design/backups/

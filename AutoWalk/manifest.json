@@ -1,0 +1,10 @@
+{
+  "Name": "Auto Walk",
+  "Author": "Codex",
+  "Version": "0.1.2",
+  "Description": "Press a key to open the world map, click a destination, and auto-walk there across areas. Click the mouse to stop.",
+  "UniqueID": "Codex.AutoWalk",
+  "EntryDll": "AutoWalk.dll",
+  "MinimumApiVersion": "4.0.0",
+  "UpdateKeys": []
+}
