@@ -3,6 +3,7 @@
 自用星露谷物语 SMAPI mod 合集，主打**减少重复劳动**：农场仆人、自动钓鱼、跨图寻路、仓储一体化等。每个 mod 单一职责、互相独立，按需安装。
 
 - 运行环境：Stardew Valley **1.6+** / SMAPI **4.0+**
+- 平台：**Windows / macOS / Linux 通用**（同一份 zip；仅「隐藏控制台」为 Windows 专属，在其它平台自动停用）
 - 界面语言：简体中文
 - 玩家直接安装：前往 [Releases](https://github.com/youzi-1205/stardew-mods/releases) 下载 zip，解压到游戏 `Mods` 文件夹即可
 

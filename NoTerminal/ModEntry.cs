@@ -25,6 +25,14 @@ internal sealed class ModEntry : Mod
 
     public override void Entry(IModHelper helper)
     {
+        // The console window is a Windows concept (macOS/Linux SMAPI runs inside the user's own
+        // terminal), and the Win32 calls below would throw there — no-op on other platforms.
+        if (Constants.TargetPlatform != GamePlatform.Windows)
+        {
+            this.Monitor.Log("此 mod 仅在 Windows 上生效，已自动停用（macOS/Linux 无独立控制台窗口）。", LogLevel.Info);
+            return;
+        }
+
         ModConfig config = helper.ReadConfig<ModConfig>();
         if (!config.HideConsole)
             return;
