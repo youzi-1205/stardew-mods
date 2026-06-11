@@ -1,0 +1,10 @@
+{
+  "Name": "隐藏控制台",
+  "Author": "youzi",
+  "Version": "1.0.0",
+  "Description": "自动隐藏 SMAPI 的黑色控制台窗口（日志仍写入文件）。",
+  "UniqueID": "Codex.NoTerminal",
+  "EntryDll": "NoTerminal.dll",
+  "MinimumApiVersion": "4.0.0",
+  "UpdateKeys": []
+}
