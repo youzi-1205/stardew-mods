@@ -2,9 +2,41 @@
 
 自用星露谷物语 SMAPI mod 合集，主打**减少重复劳动**：自动钓鱼、农场仆人、跨图寻路、箱子代付、库存总览等。
 
-- 运行环境：Stardew Valley **1.6+** / SMAPI **4.0+** / .NET 6
+- 运行环境：Stardew Valley **1.6+** / SMAPI **4.0+**
 - 界面语言：简体中文
 - 玩家直接安装：前往 [Releases](https://github.com/youzi-1205/stardew-mods/releases) 下载 zip，解压到游戏 `Mods` 文件夹即可
+
+---
+
+## 🚀 安装教程（从零开始，约 10 分钟）
+
+> 适用于刚装好游戏、从没用过 mod 的玩家（Windows + Steam）。
+
+### 第 1 步：安装 SMAPI（mod 加载器，装一次即可）
+
+1. 打开 [smapi.io](https://smapi.io/)，点击大按钮下载
+2. 解压后双击运行 `install on Windows.bat`
+3. 输入 `1`（安装），程序会自动找到游戏目录，一路确认
+
+### 第 2 步：设置 Steam 启动选项
+
+SMAPI 安装结束时会显示一行启动参数（类似 `"C:\...\Stardew Valley\StardewModdingAPI.exe" %command%`），复制它，然后：
+
+> Steam 库 → 右键星露谷物语 → **属性** → **通用** → 粘贴到底部「启动选项」
+
+之后从 Steam 正常启动即可加载 mod，成就、云存档、手柄、好友功能均不受影响。
+
+### 第 3 步：下载并解压 mod
+
+1. 打开本仓库的 [Releases 页面](https://github.com/youzi-1205/stardew-mods/releases)，下载想要的 mod zip（各 mod 互相独立，按需选择）
+2. 找到游戏的 `Mods` 文件夹：Steam 库 → 右键游戏 → **管理** → **浏览本地文件** → 进入 `Mods`
+3. 把 zip **解压**进去（一个 mod 一个文件夹，例如 `Mods\FarmSuite\`）
+
+### 第 4 步：启动游戏验证
+
+启动后旁边会多出一个**黑色控制台窗口**——这是 SMAPI 的日志窗口，**正常现象，所有 mod 玩家都有**，别关它（最小化即可；若实在不想看到，可在启动选项的 `%command%` 后追加 ` --no-terminal`）。
+
+进入存档后试试：按 **K**（物品总览）或 **M**（地图寻路）有反应，说明安装成功。各 mod 的快捷键和参数可在 `Mods\<名称>\config.json` 中修改（首次运行后生成）。
 
 ---
 
@@ -134,7 +166,9 @@
 
 ## StardewModAssistant
 
-（可选）Windows 桌面启动器：管理 mod、经由 SMAPI 启动游戏。普通玩家用 Steam 启动选项指向 SMAPI 即可，不需要它。
+（可选）Windows 桌面启动器：管理 mod、经由 SMAPI 启动游戏。普通玩家用 Steam 启动选项指向 SMAPI 即可，**不需要它**。
+
+> ⚠️ 注意：此工具及仓库根目录的若干 `.ps1`/`.bat` 脚本是作者的个人工具，内部**硬编码了作者本机的游戏路径**（`D:\app\steam\...`），其他人直接运行会失败；需自行修改路径后使用。六个 SMAPI mod 本体无任何硬编码路径，开箱即用。
 
 ---
 
