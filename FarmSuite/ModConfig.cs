@@ -52,6 +52,13 @@ internal sealed class ModConfig
     // to a chest — preferring the nearest chest that already holds the same item.
     public bool HelperHaulsDrops { get; set; } = true;
 
+    // The helper collects finished machine outputs (bait maker, furnace, keg...) into chests,
+    // covering machines on the farm and inside farm buildings (sheds, barns, greenhouse).
+    public bool HelperCollectsMachines { get; set; } = true;
+
+    // Show a "一键补货" button next to an empty machine: refills it from your chests and starts it.
+    public bool MachineRefillButton { get; set; } = true;
+
     // Character sprite sheet used by the helper.
     public string HelperSprite { get; set; } = "Characters\\FarmSuiteHelper";
 

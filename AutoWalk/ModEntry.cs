@@ -25,6 +25,8 @@ internal sealed class ModEntry : Mod
     private int legRetries;
     private int warpPendingTicks = -1; // >=0 while a warp transition is in progress
     private int diagTicks;
+    private Vector2 lastWalkPosition;
+    private int stuckTicks;
 
     public override void Entry(IModHelper helper)
     {
@@ -128,10 +130,36 @@ internal sealed class ModEntry : Mod
             return;
         }
 
-        // While the controller drives the player, wait.
+        // While the controller drives the player, wait — but watch for getting stuck: if the
+        // position hasn't moved for ~0.75s (blocked by an NPC/animal or a geometry trap),
+        // re-path immediately instead of waiting out the controller's 5-second timeout.
         if (Game1.player.controller != null)
         {
             this.idleTicks = 0;
+
+            Vector2 position = Game1.player.Position;
+            if (Vector2.Distance(position, this.lastWalkPosition) < 1f)
+            {
+                if (++this.stuckTicks >= 45)
+                {
+                    this.stuckTicks = 0;
+                    Game1.player.controller = null;
+                    if (++this.legRetries > 8)
+                    {
+                        this.StopRouting("路被挡住了，无法到达目的地。", success: false);
+                        return;
+                    }
+                    this.Monitor.Log("Walk stalled; re-pathing.", LogLevel.Trace);
+                    this.StartLeg();
+                    return;
+                }
+            }
+            else
+            {
+                this.stuckTicks = 0;
+                this.lastWalkPosition = position;
+                this.legRetries = 0; // making progress again
+            }
 
             // Snapshot the gait phase after the game animated this tick, so the controller can
             // restore it next tick after the input system's per-tick Halt wipes it.

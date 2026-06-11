@@ -8,6 +8,7 @@ using StardewValley.Characters;
 using StardewValley.Extensions;
 using StardewValley.GameData.Characters;
 using StardewValley.GameData.FarmAnimals;
+using StardewValley.GameData.Machines;
 using StardewValley.Pathfinding;
 using StardewValley.TerrainFeatures;
 using StardewValley.Objects;
@@ -44,7 +45,7 @@ internal sealed class ChestJunimo : JunimoHarvester
 /// game's own PathFindController (NPCs animate their walk cycle natively under a controller).</summary>
 internal sealed class FarmhandHelper
 {
-    private enum TaskKind { Water, Harvest, Fertilize, Plant, ChopTree, BreakStone, ClearWeeds, TendAnimals, Deliver }
+    private enum TaskKind { Water, Harvest, Fertilize, Plant, ChopTree, BreakStone, ClearWeeds, TendAnimals, Deliver, CollectMachine, CollectBuilding }
 
     private sealed record FarmTask(TaskKind Kind, Point Tile, string? ItemId = null, string? LocationName = null);
 
@@ -549,9 +550,15 @@ internal sealed class FarmhandHelper
         this.AddAnimalTasks(scratch, farm, center, radius);
         int animals = scratch.Count;
 
+        scratch.Clear();
+        this.AddMachineTasks(scratch, farm, center, radius);
+        int machines = scratch.Count;
+
         var responses = new List<Response>();
         if (crops > 0)
             responses.Add(new Response("crops", $"照料附近庄稼（{crops} 处：浇水/收获/补种）"));
+        if (machines > 0)
+            responses.Add(new Response("machines", $"收取机器产物（{machines} 处）"));
         if (animals > 0)
             responses.Add(new Response("animals", $"照料动物（{animals} 栋畜舍）"));
         if (debris > 0)
@@ -594,6 +601,9 @@ internal sealed class FarmhandHelper
                 break;
             case "animals":
                 this.AddAnimalTasks(this.tasks, farm, center, radius);
+                break;
+            case "machines":
+                this.AddMachineTasks(this.tasks, farm, center, radius);
                 break;
             case "debris":
                 this.AddDebrisTasks(this.tasks, farm, center, radius, includeMatureTrees: false);
@@ -640,10 +650,43 @@ internal sealed class FarmhandHelper
         if (includeAnimals && this.config().HelperTendsAnimals)
             this.AddAnimalTasks(this.tasks, farm, center: null, radius: int.MaxValue);
 
+        this.AddMachineTasks(this.tasks, farm, center: null, radius: int.MaxValue);
+
         if (includeDebris && this.config().HelperClearsDebris)
             this.AddDebrisTasks(this.tasks, farm, center: null, radius: int.MaxValue, includeMatureTrees: false);
 
         this.monitor.Log($"Helper task queue: {this.tasks.Count} tasks.", LogLevel.Trace);
+    }
+
+    /// <summary>Machines with finished output: on the farm surface (per machine) and inside farm
+    /// buildings — sheds, barns, greenhouse — where he walks to the door and empties the building.</summary>
+    private void AddMachineTasks(List<FarmTask> target, Farm farm, Point? center, int radius)
+    {
+        if (!this.config().HelperCollectsMachines)
+            return;
+
+        foreach (var pair in farm.objects.Pairs)
+        {
+            var tile = new Point((int)pair.Key.X, (int)pair.Key.Y);
+            if (IsWithin(tile, center, radius) && IsReadyMachine(pair.Value))
+                target.Add(new FarmTask(TaskKind.CollectMachine, tile));
+        }
+
+        foreach (Building building in farm.buildings)
+        {
+            GameLocation? indoors = building.GetIndoors();
+            if (indoors == null || !indoors.objects.Values.Any(IsReadyMachine))
+                continue;
+
+            Point door = building.getPointForHumanDoor();
+            if (center == null || Distance(door, center.Value) <= radius || BuildingDistance(building, center.Value) <= radius)
+                target.Add(new FarmTask(TaskKind.CollectBuilding, door, LocationName: indoors.NameOrUniqueName));
+        }
+    }
+
+    private static bool IsReadyMachine(StardewValley.Object obj)
+    {
+        return obj.readyForHarvest.Value && obj.heldObject.Value != null;
     }
 
     /// <summary>Crop chores (water/harvest/fertilize/plant) within a radius, budgeted by chest stock.</summary>
@@ -1032,6 +1075,10 @@ internal sealed class FarmhandHelper
                 && Game1.getLocationFromName(task.LocationName) is AnimalHouse house
                 && this.AnimalHouseNeedsCare(house),
             TaskKind.Deliver => farm.objects.TryGetValue(tile, out StardewValley.Object? chestObj) && chestObj is Chest,
+            TaskKind.CollectMachine => farm.objects.TryGetValue(tile, out StardewValley.Object? machineObj) && IsReadyMachine(machineObj),
+            TaskKind.CollectBuilding => task.LocationName != null
+                && Game1.getLocationFromName(task.LocationName) is GameLocation indoors
+                && indoors.objects.Values.Any(IsReadyMachine),
             _ => false,
         };
     }
@@ -1039,7 +1086,8 @@ internal sealed class FarmhandHelper
     private void ExecuteTask(FarmTask task)
     {
         Farm farm = Game1.getFarm();
-        if (task.Kind is TaskKind.ChopTree or TaskKind.BreakStone or TaskKind.ClearWeeds or TaskKind.TendAnimals or TaskKind.Deliver)
+        if (task.Kind is TaskKind.ChopTree or TaskKind.BreakStone or TaskKind.ClearWeeds or TaskKind.TendAnimals
+            or TaskKind.Deliver or TaskKind.CollectMachine or TaskKind.CollectBuilding)
         {
             this.ExecuteUtilityTask(task, farm);
             return;
@@ -1181,11 +1229,124 @@ internal sealed class FarmhandHelper
             case TaskKind.Deliver:
                 this.ExecuteDelivery(farm, task.Tile);
                 break;
+
+            case TaskKind.CollectMachine:
+                if (farm.objects.TryGetValue(tile, out StardewValley.Object? farmMachine) && IsReadyMachine(farmMachine))
+                    this.CollectMachineOutput(farmMachine, farm);
+                break;
+
+            case TaskKind.CollectBuilding:
+            {
+                if (task.LocationName == null || Game1.getLocationFromName(task.LocationName) is not GameLocation indoors)
+                    break;
+
+                int collected = 0;
+                foreach (StardewValley.Object machine in indoors.objects.Values.ToArray())
+                {
+                    if (IsReadyMachine(machine) && this.CollectMachineOutput(machine, indoors))
+                        collected++;
+                }
+                if (collected > 0)
+                    Game1.addHUDMessage(HUDMessage.ForCornerTextbox($"{this.config().HelperName}收取了 {indoors.DisplayName ?? task.LocationName} 里 {collected} 台机器的产物。"));
+                break;
+            }
         }
 
         // Scoop up whatever his work just knocked loose around this tile.
         if (this.config().HelperHaulsDrops && task.Kind is TaskKind.ChopTree or TaskKind.BreakStone or TaskKind.ClearWeeds)
             this.CollectNearbyDebris(farm, task.Tile, radius: 4);
+    }
+
+    /// <summary>Collect a machine's finished output into chests, mirroring the vanilla
+    /// Object.checkForAction harvest path: RecalculateOnCollect, stat/XP grants, state reset,
+    /// OutputCollected auto-restart (crystalarium), and tapper rebinding.</summary>
+    private bool CollectMachineOutput(StardewValley.Object machine, GameLocation location)
+    {
+        StardewValley.Object? output = machine.heldObject.Value;
+        if (output == null)
+            return false;
+
+        MachineData? machineData = machine.GetMachineData();
+
+        // Some outputs re-roll on collect (vanilla: lastOutputRuleId + RecalculateOnCollect).
+        if (machineData != null && machine.lastOutputRuleId.Value != null)
+        {
+            MachineOutputRule? recalcRule = machineData.OutputRules?.FirstOrDefault(p => p.Id == machine.lastOutputRuleId.Value);
+            if (recalcRule != null && recalcRule.RecalculateOnCollect)
+            {
+                machine.heldObject.Value = null;
+                machine.OutputMachine(machineData, recalcRule, machine.lastInputItem.Value, Game1.MasterPlayer, location, probe: false, heldObjectOnly: true);
+                if (machine.heldObject.Value != null)
+                    output = machine.heldObject.Value;
+                else
+                    machine.heldObject.Value = output;
+            }
+        }
+
+        machine.heldObject.Value = null;
+        machine.readyForHarvest.Value = false;
+        machine.showNextIndex.Value = false;
+        machine.ResetParentSheetIndex();
+
+        MachineDataUtility.UpdateStats(machineData?.StatsToIncrementWhenHarvested, output, output.Stack);
+
+        // Vanilla grants harvest XP to the collector — credit the player.
+        if (machineData?.ExperienceGainOnHarvest != null)
+        {
+            string[] parts = machineData.ExperienceGainOnHarvest.Split(' ');
+            for (int i = 0; i + 1 < parts.Length; i += 2)
+            {
+                int skill = Farmer.getSkillNumberFromName(parts[i]);
+                if (skill != -1 && int.TryParse(parts[i + 1], out int amount))
+                    Game1.MasterPlayer.gainExperience(skill, amount);
+            }
+        }
+
+        // Machines like the crystalarium immediately start their next batch on collection.
+        if (MachineDataUtility.TryGetMachineOutputRule(machine, machineData, MachineOutputTrigger.OutputCollected, output.getOne(), Game1.MasterPlayer, location, out MachineOutputRule restartRule, out _, out _, out _))
+            machine.OutputMachine(machineData, restartRule, machine.lastInputItem.Value, Game1.MasterPlayer, location, probe: false);
+
+        // Tappers stay attached to their tree and queue the next product.
+        if (machine.IsTapper() && location.terrainFeatures.TryGetValue(machine.TileLocation, out TerrainFeature? feature) && feature is Tree tree)
+            tree.UpdateTapperProduct(machine, output);
+
+        // Route the output into chests: same-location chests first, then farm chests.
+        Item? remaining = output;
+        foreach (Chest chest in GetDepositChests(location))
+        {
+            remaining = chest.addItem(remaining);
+            if (remaining == null)
+                break;
+        }
+        if (remaining != null)
+            Game1.createItemDebris(remaining, machine.TileLocation * 64f, -1, location);
+
+        location.playSound("coin");
+        return true;
+    }
+
+    /// <summary>Chests to deposit into: the machine's own location first (shed chests beside the
+    /// kegs), then the farm's chests.</summary>
+    private static List<Chest> GetDepositChests(GameLocation location)
+    {
+        var chests = new List<Chest>();
+        void Collect(GameLocation loc)
+        {
+            foreach (StardewValley.Object obj in loc.objects.Values)
+            {
+                if (obj is Chest chest && chest.playerChest.Value
+                    && chest.SpecialChestType is Chest.SpecialChestTypes.None or Chest.SpecialChestTypes.BigChest
+                    && !chests.Contains(chest))
+                {
+                    chests.Add(chest);
+                }
+            }
+        }
+
+        Collect(location);
+        if (location is not Farm)
+            Collect(Game1.getFarm());
+        return chests;
     }
 
     // ── drop hauling: pick up his own debris and walk it to a sensible chest ──
@@ -1593,6 +1754,8 @@ internal sealed class FarmhandHelper
             TaskKind.ClearWeeds => 420,
             TaskKind.TendAnimals => 1000,
             TaskKind.Deliver => 350,
+            TaskKind.CollectMachine => 400,
+            TaskKind.CollectBuilding => 800,
             _ => 900,
         };
         float multiplier = Math.Max(0.25f, this.config().HelperWorkSpeedMultiplier);
@@ -1605,6 +1768,7 @@ internal sealed class FarmhandHelper
     {
         this.helperAxe ??= new Axe { UpgradeLevel = 4, lastUser = Game1.MasterPlayer };
         this.helperAxe.lastUser = Game1.MasterPlayer;
+        this.helperAxe.swingTicker++; // resource clumps reject repeat hits from the same "swing"
         return this.helperAxe;
     }
 
@@ -1612,6 +1776,7 @@ internal sealed class FarmhandHelper
     {
         this.helperPickaxe ??= new Pickaxe { UpgradeLevel = 4, lastUser = Game1.MasterPlayer };
         this.helperPickaxe.lastUser = Game1.MasterPlayer;
+        this.helperPickaxe.swingTicker++;
         return this.helperPickaxe;
     }
 
@@ -1619,6 +1784,7 @@ internal sealed class FarmhandHelper
     {
         this.helperScythe ??= new MeleeWeapon("47") { lastUser = Game1.MasterPlayer };
         this.helperScythe.lastUser = Game1.MasterPlayer;
+        this.helperScythe.swingTicker++;
         return this.helperScythe;
     }
 

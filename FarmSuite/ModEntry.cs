@@ -14,6 +14,7 @@ internal sealed class ModEntry : Mod
         _ = new CraftFromChests(helper, this.Monitor, () => this.config);
         _ = new FarmhandHelper(helper, this.Monitor, () => this.config);
         _ = new TruckFeature(helper, this.Monitor, () => this.config);
+        _ = new MachineRefill(helper, this.Monitor, () => this.config);
     }
 
     private void MigrateConfig(IModHelper helper)

@@ -60,23 +60,34 @@ internal sealed class SmoothFarmerController : PathFindController
             }
         }
 
-        // Always push exactly one direction toward the current node (dominant axis), so
-        // movementDirections is never empty while walking.
+        // Always push exactly one direction toward the current node, so movementDirections is
+        // never empty while walking. Axis choice has a DEADZONE: once an axis is within a few
+        // pixels, commit to the other axis — picking by raw magnitude made the farmer overshoot
+        // back and forth (each step is ~5.5px) and twitch in place without ever fixing the
+        // remaining 1-2px on the other axis.
         Point node = this.pathToEndPoint.Peek();
         Rectangle box = who.GetBoundingBox();
         int dx = (node.X * 64 + 32) - box.Center.X;
-        int dy = (node.Y * 64 + 60) - box.Bottom; // aim the feet near the bottom of the tile
+        int dy = (node.Y * 64 + 56) - box.Bottom; // aim the feet a comfortable margin into the tile
+
+        bool moveVertical;
+        if (Math.Abs(dx) <= 4)
+            moveVertical = true;
+        else if (Math.Abs(dy) <= 4)
+            moveVertical = false;
+        else
+            moveVertical = Math.Abs(dy) > Math.Abs(dx);
 
         who.movementDirections.Clear();
-        if (Math.Abs(dx) >= Math.Abs(dy))
-        {
-            if (dx >= 0) who.SetMovingRight(b: true);
-            else who.SetMovingLeft(b: true);
-        }
-        else
+        if (moveVertical)
         {
             if (dy >= 0) who.SetMovingDown(b: true);
             else who.SetMovingUp(b: true);
+        }
+        else
+        {
+            if (dx >= 0) who.SetMovingRight(b: true);
+            else who.SetMovingLeft(b: true);
         }
 
         who.canMove = true;
@@ -121,10 +132,12 @@ internal sealed class SmoothFarmerController : PathFindController
 
     private static bool HasReached(Farmer who, Point node)
     {
-        Rectangle target = new(node.X * 64, node.Y * 64, 64, 64);
-        target.Inflate(-2, 0);
+        // Pixel tolerance instead of strict rectangle containment: each movement step is ~5.5px,
+        // so a ±6px window is always crossable — the old containment + bottom-margin combo could
+        // be geometrically unsatisfiable next to obstacles, leaving the farmer twitching forever.
         Rectangle box = who.GetBoundingBox();
-        bool aligned = target.Contains(box) || (box.Width > target.Width && target.Contains(box.Center));
-        return aligned && target.Bottom - box.Bottom >= 2;
+        int dx = (node.X * 64 + 32) - box.Center.X;
+        int dy = (node.Y * 64 + 56) - box.Bottom;
+        return Math.Abs(dx) <= 6 && Math.Abs(dy) <= 6;
     }
 }
