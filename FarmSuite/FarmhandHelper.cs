@@ -21,17 +21,13 @@ namespace FarmSuite;
 /// the save serializer (a mod-defined NPC subclass in a characters list corrupts the save).</summary>
 internal sealed class ChestJunimo : JunimoHarvester
 {
-    public List<Chest> Outputs { get; } = new();
+    /// <summary>Deposits one item and returns the leftover (null when fully stored). Assigned by
+    /// the helper before each harvest so storage uses the same smart chest-matching everywhere.</summary>
+    public Func<Item, Item?>? Deposit;
 
     public override void tryToAddItemToHut(Item i)
     {
-        Item? remaining = i;
-        foreach (Chest chest in this.Outputs)
-        {
-            remaining = chest.addItem(remaining);
-            if (remaining == null)
-                return;
-        }
+        Item? remaining = this.Deposit != null ? this.Deposit(i) : i;
         if (remaining != null && this.currentLocation != null)
             Game1.createItemDebris(remaining, this.Position, -1, this.currentLocation);
     }
@@ -539,8 +535,16 @@ internal sealed class FarmhandHelper
         int crops = scratch.Count;
 
         scratch.Clear();
-        this.AddDebrisTasks(scratch, farm, center, radius, includeMatureTrees: false);
-        int debris = scratch.Count;
+        this.AddStoneTasks(scratch, farm, center, radius);
+        int stones = scratch.Count;
+
+        scratch.Clear();
+        this.AddWoodTasks(scratch, farm, center, radius);
+        int wood = scratch.Count;
+
+        scratch.Clear();
+        this.AddFiberTasks(scratch, farm, center, radius);
+        int fiber = scratch.Count;
 
         scratch.Clear();
         this.AddTreeTasks(scratch, farm, center, radius);
@@ -561,8 +565,12 @@ internal sealed class FarmhandHelper
             responses.Add(new Response("machines", $"收取机器产物（{machines} 处）"));
         if (animals > 0)
             responses.Add(new Response("animals", $"照料动物（{animals} 栋畜舍）"));
-        if (debris > 0)
-            responses.Add(new Response("debris", $"清理杂物（{debris} 处：杂草/石头/树枝）"));
+        if (stones > 0)
+            responses.Add(new Response("stones", $"碎石头（{stones} 处 → 石头/矿石）"));
+        if (wood > 0)
+            responses.Add(new Response("wood", $"清木头（{wood} 处 → 树枝/木桩）"));
+        if (fiber > 0)
+            responses.Add(new Response("fiber", $"除草（{fiber} 处 → 纤维）"));
         if (trees > 0)
             responses.Add(new Response("trees", $"砍附近的树（{trees} 棵）"));
         responses.Add(new Response("daily", "全农场日常巡一遍"));
@@ -605,8 +613,14 @@ internal sealed class FarmhandHelper
             case "machines":
                 this.AddMachineTasks(this.tasks, farm, center, radius);
                 break;
-            case "debris":
-                this.AddDebrisTasks(this.tasks, farm, center, radius, includeMatureTrees: false);
+            case "stones":
+                this.AddStoneTasks(this.tasks, farm, center, radius);
+                break;
+            case "wood":
+                this.AddWoodTasks(this.tasks, farm, center, radius);
+                break;
+            case "fiber":
+                this.AddFiberTasks(this.tasks, farm, center, radius);
                 break;
             case "trees":
                 this.AddTreeTasks(this.tasks, farm, center, radius);
@@ -771,38 +785,68 @@ internal sealed class FarmhandHelper
         return this.CountEmptyTroughs(house) > 0;
     }
 
-    /// <summary>Debris (weeds/twigs/stones/clumps and only SMALL trees) within a radius. Mature
-    /// trees are deliberately excluded unless asked for — felling the player's grown trees as
-    /// "debris" was the old surprise behavior.</summary>
+    /// <summary>All debris kinds together (used by the daily rounds). Mature trees are excluded
+    /// unless asked for — felling the player's grown trees as "debris" was the old surprise.</summary>
     private void AddDebrisTasks(List<FarmTask> target, Farm farm, Point? center, int radius, bool includeMatureTrees)
     {
-        foreach (var pair in farm.terrainFeatures.Pairs)
-        {
-            var tile = new Point((int)pair.Key.X, (int)pair.Key.Y);
-            if (!IsWithin(tile, center, radius))
-                continue;
+        this.AddStoneTasks(target, farm, center, radius);
+        this.AddWoodTasks(target, farm, center, radius);
+        this.AddFiberTasks(target, farm, center, radius);
+        if (includeMatureTrees)
+            this.AddTreeTasks(target, farm, center ?? Point.Zero, center == null ? int.MaxValue : radius);
+    }
 
-            if (pair.Value is Tree tree && (includeMatureTrees ? this.ShouldClearTree(tree) : this.IsSmallTree(tree)))
-                target.Add(new FarmTask(TaskKind.ChopTree, tile));
-        }
-
+    /// <summary>Stone sources: breakable stones, small boulders, and stone/meteorite clumps.</summary>
+    private void AddStoneTasks(List<FarmTask> target, Farm farm, Point? center, int radius)
+    {
         foreach (var pair in farm.objects.Pairs)
         {
             var tile = new Point((int)pair.Key.X, (int)pair.Key.Y);
-            if (!IsWithin(tile, center, radius))
-                continue;
-
-            if (IsClearableWeed(pair.Value) || IsTwig(pair.Value))
-                target.Add(new FarmTask(TaskKind.ClearWeeds, tile));
-            else if (pair.Value.IsBreakableStone() || IsSmallBoulder(pair.Value))
+            if (IsWithin(tile, center, radius) && (pair.Value.IsBreakableStone() || IsSmallBoulder(pair.Value)))
                 target.Add(new FarmTask(TaskKind.BreakStone, tile));
         }
 
         foreach (ResourceClump clump in farm.resourceClumps)
         {
             var tile = new Point((int)clump.Tile.X, (int)clump.Tile.Y);
-            if (IsWithin(tile, center, radius))
-                target.Add(new FarmTask(IsWoodClump(clump) ? TaskKind.ChopTree : TaskKind.BreakStone, tile));
+            if (IsWithin(tile, center, radius) && !IsWoodClump(clump))
+                target.Add(new FarmTask(TaskKind.BreakStone, tile));
+        }
+    }
+
+    /// <summary>Wood sources: twigs, stumps/hollow logs, and small trees (seeds/sprouts).</summary>
+    private void AddWoodTasks(List<FarmTask> target, Farm farm, Point? center, int radius)
+    {
+        foreach (var pair in farm.terrainFeatures.Pairs)
+        {
+            var tile = new Point((int)pair.Key.X, (int)pair.Key.Y);
+            if (IsWithin(tile, center, radius) && pair.Value is Tree tree && this.IsSmallTree(tree))
+                target.Add(new FarmTask(TaskKind.ChopTree, tile));
+        }
+
+        foreach (var pair in farm.objects.Pairs)
+        {
+            var tile = new Point((int)pair.Key.X, (int)pair.Key.Y);
+            if (IsWithin(tile, center, radius) && IsTwig(pair.Value))
+                target.Add(new FarmTask(TaskKind.ClearWeeds, tile)); // twig execution uses the axe
+        }
+
+        foreach (ResourceClump clump in farm.resourceClumps)
+        {
+            var tile = new Point((int)clump.Tile.X, (int)clump.Tile.Y);
+            if (IsWithin(tile, center, radius) && IsWoodClump(clump))
+                target.Add(new FarmTask(TaskKind.ChopTree, tile));
+        }
+    }
+
+    /// <summary>Fiber sources: weeds.</summary>
+    private void AddFiberTasks(List<FarmTask> target, Farm farm, Point? center, int radius)
+    {
+        foreach (var pair in farm.objects.Pairs)
+        {
+            var tile = new Point((int)pair.Key.X, (int)pair.Key.Y);
+            if (IsWithin(tile, center, radius) && IsClearableWeed(pair.Value))
+                target.Add(new FarmTask(TaskKind.ClearWeeds, tile));
         }
     }
 
@@ -1123,11 +1167,12 @@ internal sealed class FarmhandHelper
                 bool regrows = dirt.crop.RegrowsAfterHarvest();
 
                 // Crop.harvest with a junimoHarvester computes vanilla quality/stack/extra drops
-                // and routes every item through our ChestJunimo into the farm chests.
+                // and routes every item through our ChestJunimo into the farm chests — preferring
+                // a chest that already holds the same item, nearest first.
                 this.chestJunimo.currentLocation = farm;
                 this.chestJunimo.Position = this.npc!.Position;
-                this.chestJunimo.Outputs.Clear();
-                this.chestJunimo.Outputs.AddRange(chests);
+                List<DepositChest> depositChests = GetDepositChests(farm);
+                this.chestJunimo.Deposit = item => SmartDeposit(item, depositChests, task.Tile);
 
                 bool spent = dirt.crop.harvest(task.Tile.X, task.Tile.Y, dirt, this.chestJunimo);
                 bool succeeded = spent || !dirt.readyForHarvest(); // regrow crops return false on a successful pick
@@ -1310,14 +1355,9 @@ internal sealed class FarmhandHelper
         if (machine.IsTapper() && location.terrainFeatures.TryGetValue(machine.TileLocation, out TerrainFeature? feature) && feature is Tree tree)
             tree.UpdateTapperProduct(machine, output);
 
-        // Route the output into chests: same-location chests first, then farm chests.
-        Item? remaining = output;
-        foreach (Chest chest in GetDepositChests(location))
-        {
-            remaining = chest.addItem(remaining);
-            if (remaining == null)
-                break;
-        }
+        // Route the output into chests: prefer one already holding the same item, nearest first.
+        var machineTile = new Point((int)machine.TileLocation.X, (int)machine.TileLocation.Y);
+        Item? remaining = SmartDeposit(output, GetDepositChests(location), machineTile);
         if (remaining != null)
             Game1.createItemDebris(remaining, machine.TileLocation * 64f, -1, location);
 
@@ -1325,28 +1365,61 @@ internal sealed class FarmhandHelper
         return true;
     }
 
-    /// <summary>Chests to deposit into: the machine's own location first (shed chests beside the
-    /// kegs), then the farm's chests.</summary>
-    private static List<Chest> GetDepositChests(GameLocation location)
+    private sealed record DepositChest(Chest Chest, Point Tile, int BaseCost);
+
+    /// <summary>Chests usable for storage: the given location's own chests first (cost 0 — shed
+    /// chests beside the kegs), then the farm's chests at a distance penalty.</summary>
+    private static List<DepositChest> GetDepositChests(GameLocation location)
     {
-        var chests = new List<Chest>();
-        void Collect(GameLocation loc)
+        var result = new List<DepositChest>();
+        void Collect(GameLocation loc, int baseCost)
         {
-            foreach (StardewValley.Object obj in loc.objects.Values)
+            foreach (var pair in loc.objects.Pairs)
             {
-                if (obj is Chest chest && chest.playerChest.Value
+                if (pair.Value is Chest chest && chest.playerChest.Value
                     && chest.SpecialChestType is Chest.SpecialChestTypes.None or Chest.SpecialChestTypes.BigChest
-                    && !chests.Contains(chest))
+                    && !result.Any(entry => ReferenceEquals(entry.Chest, chest)))
                 {
-                    chests.Add(chest);
+                    result.Add(new DepositChest(chest, new Point((int)pair.Key.X, (int)pair.Key.Y), baseCost));
                 }
             }
         }
 
-        Collect(location);
+        Collect(location, 0);
         if (location is not Farm)
-            Collect(Game1.getFarm());
-        return chests;
+            Collect(Game1.getFarm(), 500);
+        return result;
+    }
+
+    /// <summary>Store an item the way the player asked for: chests that ALREADY hold the same item
+    /// win (nearest first), then the nearest chest with a free slot. Returns the leftover.</summary>
+    private static Item? SmartDeposit(Item item, List<DepositChest> chests, Point from)
+    {
+        Item? remaining = item;
+
+        // Pass 1: chests already holding this exact item.
+        foreach (DepositChest entry in chests
+                     .Where(entry => entry.Chest.Items.CountId(item.QualifiedItemId) > 0)
+                     .OrderBy(entry => entry.BaseCost + Distance(from, entry.Tile))
+                     .ToList())
+        {
+            remaining = entry.Chest.addItem(remaining);
+            if (remaining == null)
+                return null;
+        }
+
+        // Pass 2: nearest chests with room.
+        foreach (DepositChest entry in chests
+                     .Where(entry => entry.Chest.Items.CountItemStacks() < entry.Chest.GetActualCapacity())
+                     .OrderBy(entry => entry.BaseCost + Distance(from, entry.Tile))
+                     .ToList())
+        {
+            remaining = entry.Chest.addItem(remaining);
+            if (remaining == null)
+                return null;
+        }
+
+        return remaining;
     }
 
     // ── drop hauling: pick up his own debris and walk it to a sensible chest ──
@@ -1684,11 +1757,12 @@ internal sealed class FarmhandHelper
 
     private void TendAnimalHouse(AnimalHouse house)
     {
-        List<Chest> chests = GetFarmChests(Game1.getFarm());
+        List<DepositChest> chests = GetDepositChests(house);
+        Point from = this.npc?.TilePoint ?? Point.Zero;
         int fed = this.FeedAnimals(house);
         int petted = 0;
         int collected = 0;
-        int looseCollected = this.config().HelperCollectsAnimalProducts ? this.CollectLooseAnimalProducts(house, chests) : 0;
+        int looseCollected = this.config().HelperCollectsAnimalProducts ? this.CollectLooseAnimalProducts(house, chests, from) : 0;
 
         foreach (FarmAnimal animal in this.GetAnimals(house))
         {
@@ -1698,7 +1772,7 @@ internal sealed class FarmhandHelper
                 petted++;
             }
 
-            if (this.CollectProduce(animal, chests))
+            if (this.CollectProduce(animal, chests, from))
                 collected++;
         }
 
@@ -1819,7 +1893,7 @@ internal sealed class FarmhandHelper
             && animal.GetHarvestType().GetValueOrDefault() != FarmAnimalHarvestType.DigUp;
     }
 
-    private bool CollectProduce(FarmAnimal animal, List<Chest> chests)
+    private bool CollectProduce(FarmAnimal animal, List<DepositChest> chests, Point from)
     {
         if (!this.CanCollectProduce(animal))
             return false;
@@ -1833,16 +1907,12 @@ internal sealed class FarmhandHelper
         animal.ReloadTextureIfNeeded();
         animal.HandleStatsOnProduceCollected(produce, (uint)produce.Stack);
 
-        Item? remaining = produce;
-        foreach (Chest chest in chests)
+        Item? remaining = SmartDeposit(produce, chests, from);
+        if (remaining != null)
         {
-            remaining = chest.addItem(remaining);
-            if (remaining == null)
-                return true;
+            GameLocation location = animal.currentLocation ?? Game1.getFarm();
+            Game1.createItemDebris(remaining, animal.Position, -1, location);
         }
-
-        GameLocation location = animal.currentLocation ?? Game1.getFarm();
-        Game1.createItemDebris(remaining, animal.Position, -1, location);
         return true;
     }
 
@@ -1854,7 +1924,7 @@ internal sealed class FarmhandHelper
         return Math.Max(0, after - before);
     }
 
-    private int CollectLooseAnimalProducts(GameLocation location, List<Chest> chests)
+    private int CollectLooseAnimalProducts(GameLocation location, List<DepositChest> chests, Point from)
     {
         int collected = 0;
         foreach (var pair in location.objects.Pairs.ToArray())
@@ -1864,14 +1934,7 @@ internal sealed class FarmhandHelper
                 continue;
 
             location.objects.Remove(pair.Key);
-            Item? remaining = obj;
-            foreach (Chest chest in chests)
-            {
-                remaining = chest.addItem(remaining);
-                if (remaining == null)
-                    break;
-            }
-
+            Item? remaining = SmartDeposit(obj, chests, from);
             if (remaining != null)
                 Game1.createItemDebris(remaining, pair.Key * 64f, -1, location);
             collected++;

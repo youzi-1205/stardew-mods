@@ -104,6 +104,7 @@ internal sealed class ModEntry : Mod
     {
         this.legWarp = null;
         this.warpPendingTicks = 0;
+        this.Monitor.Log($"Warping: {Game1.currentLocation?.Name} -> {warp.TargetName} ({warp.TargetX},{warp.TargetY}).", LogLevel.Info);
         Game1.player.warpFarmer(warp);
     }
 
@@ -122,9 +123,10 @@ internal sealed class ModEntry : Mod
         if (this.warpPendingTicks >= 0)
         {
             this.warpPendingTicks++;
-            if (this.warpPendingTicks > 180) // ~3s with no Warped event → assume it didn't take
+            if (this.warpPendingTicks > 90) // ~1.5s with no Warped event → it didn't take
             {
                 this.warpPendingTicks = -1;
+                this.Monitor.Log($"Warp didn't fire (still in '{Game1.currentLocation?.Name}'); re-planning.", LogLevel.Info);
                 this.StartLeg();
             }
             return;
@@ -194,9 +196,23 @@ internal sealed class ModEntry : Mod
 
         // Controller stopped short of the approach tile → give it a moment, then retry / give up.
         this.idleTicks++;
-        if (this.idleTicks < 15)
+        if (this.idleTicks < 10)
             return;
         this.idleTicks = 0;
+
+        // Still reasonably close to the exit? Warping from a couple tiles out beats stalling at
+        // the map edge forever (the visible "stands at the border" bug).
+        if (this.legWarp != null)
+        {
+            Point tile = Game1.player.TilePoint;
+            int distance = Math.Abs(tile.X - this.legApproach.X) + Math.Abs(tile.Y - this.legApproach.Y);
+            if (distance <= 6)
+            {
+                this.Monitor.Log($"Stopped {distance} tiles short of the exit approach; warping anyway.", LogLevel.Info);
+                this.DoWarp(this.legWarp);
+                return;
+            }
+        }
 
         this.legRetries++;
         if (this.legRetries > 4)
@@ -204,6 +220,7 @@ internal sealed class ModEntry : Mod
             this.StopRouting("路被挡住了，无法到达目的地。", success: false);
             return;
         }
+        this.Monitor.Log($"Leg retry {this.legRetries}: at {Game1.player.TilePoint}, approach {this.legApproach}.", LogLevel.Info);
         this.StartLeg();
     }
 
