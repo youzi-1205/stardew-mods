@@ -38,8 +38,8 @@ internal sealed class ModEntry : Mod
 
     private void OnMenuChanged(object? sender, MenuChangedEventArgs e)
     {
-        bool newRelevant = e.NewMenu is ShopMenu or CarpenterMenu;
-        bool oldRelevant = e.OldMenu is ShopMenu or CarpenterMenu;
+        bool newRelevant = IsRelevantMenu(e.NewMenu);
+        bool oldRelevant = IsRelevantMenu(e.OldMenu);
 
         if (newRelevant && !this.sessionActive)
         {
@@ -47,12 +47,38 @@ internal sealed class ModEntry : Mod
             this.pulled.Clear();
             this.announced.Clear();
             this.warnedNoSpace = false;
+
+            // Robin's HOUSE UPGRADE is a plain dialogue (not a CarpenterMenu): front the materials
+            // as soon as her question dialogue opens, so answering "yes" just works.
+            if (e.NewMenu is DialogueBox && Game1.currentLocation?.Name == "ScienceHouse")
+            {
+                switch (Game1.player.HouseUpgradeLevel)
+                {
+                    case 0:
+                        this.EnsureInInventory("(O)388", 450); // wood
+                        break;
+                    case 1:
+                        this.EnsureInInventory("(O)709", 100); // hardwood
+                        break;
+                    default:
+                        // Community upgrade (Pam's house) needs 950 wood.
+                        if (!Game1.MasterPlayer.mailReceived.Contains("pamHouseUpgrade"))
+                            this.EnsureInInventory("(O)388", 950);
+                        break;
+                }
+            }
         }
         else if (!newRelevant && oldRelevant && this.sessionActive)
         {
             this.ReturnLeftovers();
             this.sessionActive = false;
         }
+    }
+
+    private static bool IsRelevantMenu(IClickableMenu? menu)
+    {
+        return menu is ShopMenu or CarpenterMenu
+            || (menu is DialogueBox && Game1.currentLocation?.Name == "ScienceHouse");
     }
 
     private void OnUpdateTicked(object? sender, UpdateTickedEventArgs e)
@@ -83,8 +109,9 @@ internal sealed class ModEntry : Mod
         if (string.IsNullOrEmpty(tradeItem))
             return;
 
-        int needed = stock.TradeItemCount ?? 5; // vanilla's default trade count
-        this.EnsureInInventory(tradeItem, needed);
+        // Stock 5 purchases' worth so shift-click batch buying works too (leftovers go back).
+        int perPurchase = stock.TradeItemCount ?? 5; // vanilla's default trade count
+        this.EnsureInInventory(tradeItem, perPurchase * 5);
     }
 
     private void TopUpForBlueprint(CarpenterMenu menu)
