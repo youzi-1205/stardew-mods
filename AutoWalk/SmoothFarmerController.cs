@@ -30,8 +30,11 @@ internal sealed class SmoothFarmerController : PathFindController
     private float savedTimer;
 
     public SmoothFarmerController(Farmer who, GameLocation location, Point endPoint, bool run)
-        : base(who, location, endPoint, -1)
+        : base(who, location, isAtEndPoint, -1, null, 60000, endPoint)
     {
+        // NOTE: the default PathFindController overload caps A* at 10,000 explored nodes, which
+        // genuinely fails on long routes across big maps (Forest/Beach) and produced bogus
+        // "can't reach" errors. 60,000 covers any vanilla map.
         this.run = run;
     }
 

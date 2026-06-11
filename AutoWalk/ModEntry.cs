@@ -139,6 +139,11 @@ internal sealed class ModEntry : Mod
         {
             this.idleTicks = 0;
 
+            // A menu pauses the single-player game: the player legitimately isn't moving, so the
+            // stuck watchdog must not count those ticks as "blocked".
+            if (Game1.activeClickableMenu != null && !Game1.IsMultiplayer)
+                return;
+
             Vector2 position = Game1.player.Position;
             if (Vector2.Distance(position, this.lastWalkPosition) < 1f)
             {
@@ -200,13 +205,13 @@ internal sealed class ModEntry : Mod
             return;
         this.idleTicks = 0;
 
-        // Still reasonably close to the exit? Warping from a couple tiles out beats stalling at
-        // the map edge forever (the visible "stands at the border" bug).
+        // Still close to the exit? Warping from a couple tiles out beats stalling at the map
+        // edge — but keep it tight (3 tiles) so it never looks like teleporting through scenery.
         if (this.legWarp != null)
         {
             Point tile = Game1.player.TilePoint;
             int distance = Math.Abs(tile.X - this.legApproach.X) + Math.Abs(tile.Y - this.legApproach.Y);
-            if (distance <= 6)
+            if (distance <= 3)
             {
                 this.Monitor.Log($"Stopped {distance} tiles short of the exit approach; warping anyway.", LogLevel.Info);
                 this.DoWarp(this.legWarp);
@@ -290,7 +295,7 @@ internal sealed class ModEntry : Mod
             return;
         }
 
-        Point approach = this.FindReachableTileNear(loc, new Point(warp.X, warp.Y));
+        Point approach = this.FindWarpApproach(loc, warp);
         this.legWarp = warp;
         this.legApproach = approach;
 
@@ -324,6 +329,40 @@ internal sealed class ModEntry : Mod
         {
             return null; // pathfinder's shared buffer is busy; try again next tick
         }
+    }
+
+    /// <summary>Approach tile for a warp. Edge warps (map exits) get a tile scanned INWARD along
+    /// the warp's own row/column — that's the road through the fence gap — so the player walks
+    /// straight out the exit instead of stopping beside it and "teleporting" through scenery.</summary>
+    private Point FindWarpApproach(GameLocation loc, Warp warp)
+    {
+        int width = loc.map?.Layers[0]?.LayerWidth ?? 0;
+        int height = loc.map?.Layers[0]?.LayerHeight ?? 0;
+        if (width <= 0 || height <= 0)
+            return new Point(warp.X, warp.Y);
+
+        int x = Math.Clamp(warp.X, 0, width - 1);
+        int y = Math.Clamp(warp.Y, 0, height - 1);
+
+        (int dx, int dy) = warp.X < 0 ? (1, 0)
+            : warp.X >= width ? (-1, 0)
+            : warp.Y < 0 ? (0, 1)
+            : warp.Y >= height ? (0, -1)
+            : (0, 0);
+
+        if (dx != 0 || dy != 0)
+        {
+            for (int step = 0; step < 8; step++)
+            {
+                var candidate = new Point(x + dx * step, y + dy * step);
+                if (candidate.X < 0 || candidate.Y < 0 || candidate.X >= width || candidate.Y >= height)
+                    break;
+                if (this.IsWalkable(loc, candidate))
+                    return candidate;
+            }
+        }
+
+        return this.FindReachableTileNear(loc, new Point(x, y));
     }
 
     /// <summary>Find the tile nearest <paramref name="target"/> that's inside the map and walkable,

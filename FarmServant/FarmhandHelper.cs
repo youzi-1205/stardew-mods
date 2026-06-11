@@ -1038,7 +1038,15 @@ internal sealed class FarmhandHelper
             if (this.workTimerMs > 0)
                 return;
 
-            this.ExecuteTask(this.current);
+            if (this.ExecuteTask(this.current))
+            {
+                // Multi-hit target (stump/log/boulder) not finished — stay put and keep working
+                // until it's actually done instead of wandering off to another task.
+                this.workTimerMs = this.GetWorkTime(this.current);
+                this.workDurationMs = this.workTimerMs;
+                return;
+            }
+
             this.current = null;
             return;
         }
@@ -1168,18 +1176,19 @@ internal sealed class FarmhandHelper
         };
     }
 
-    private void ExecuteTask(FarmTask task)
+    /// <summary>Execute the task once. Returns true when the target needs MORE work cycles at the
+    /// same spot (multi-hit stumps/logs/boulders) — the caller then stays put and repeats.</summary>
+    private bool ExecuteTask(FarmTask task)
     {
         Farm farm = Game1.getFarm();
         if (task.Kind is TaskKind.ChopTree or TaskKind.BreakStone or TaskKind.ClearWeeds or TaskKind.TendAnimals
             or TaskKind.Deliver or TaskKind.CollectMachine or TaskKind.CollectBuilding or TaskKind.CutGrass)
         {
-            this.ExecuteUtilityTask(task, farm);
-            return;
+            return this.ExecuteUtilityTask(task, farm);
         }
 
         if (!farm.terrainFeatures.TryGetValue(new Vector2(task.Tile.X, task.Tile.Y), out TerrainFeature? feature) || feature is not HoeDirt dirt)
-            return;
+            return false;
 
         List<Chest> chests = GetFarmChests(farm);
         var tileVector = new Vector2(task.Tile.X, task.Tile.Y);
@@ -1201,7 +1210,7 @@ internal sealed class FarmhandHelper
             case TaskKind.Harvest:
             {
                 if (dirt.crop == null)
-                    return;
+                    return false;
 
                 string seedId = dirt.crop.netSeedIndex.Value ?? "";
                 string harvestId = dirt.crop.indexOfHarvest.Value ?? "";
@@ -1255,9 +1264,9 @@ internal sealed class FarmhandHelper
             {
                 string? seed = task.ItemId;
                 if (seed == null || !Crop.TryGetData(seed, out _) || !Crop.IsInSeason(farm, seed))
-                    return;
+                    return false;
                 if (!chests.Any(c => c.Items.CountId(seed) > 0))
-                    return;
+                    return false;
 
                 // Plant manually: HoeDirt.plant's seed branch validates against the FARMER's
                 // current location, which is wrong for NPC-driven planting.
@@ -1269,11 +1278,15 @@ internal sealed class FarmhandHelper
                 break;
             }
         }
+
+        return false;
     }
 
-    private void ExecuteUtilityTask(FarmTask task, Farm farm)
+    /// <summary>Returns true when the target still needs more work cycles at the same spot.</summary>
+    private bool ExecuteUtilityTask(FarmTask task, Farm farm)
     {
         Vector2 tile = new(task.Tile.X, task.Tile.Y);
+        bool stay = false;
 
         if (task.Kind is TaskKind.ChopTree or TaskKind.BreakStone or TaskKind.ClearWeeds
             && this.config().HelperHaulsDrops && !this.recentWorkTiles.Contains(task.Tile))
@@ -1287,7 +1300,7 @@ internal sealed class FarmhandHelper
             {
                 bool progressed = this.ChopAt(farm, tile);
                 if (progressed && this.HasClearableTreeOrWoodClump(farm, tile))
-                    this.tasks.Add(task); // multi-hit target: keep going
+                    stay = true; // multi-hit target: stay until it's gone
                 else if (!progressed)
                     this.monitor.Log($"Helper axe too weak for obstacle at {tile}; skipping.", LogLevel.Trace);
                 break;
@@ -1297,7 +1310,7 @@ internal sealed class FarmhandHelper
             {
                 bool progressed = this.BreakStoneAt(farm, tile);
                 if (progressed && this.HasBreakableStone(farm, tile))
-                    this.tasks.Add(task);
+                    stay = true;
                 else if (!progressed)
                     this.monitor.Log($"Helper pickaxe too weak for obstacle at {tile}; skipping.", LogLevel.Trace);
                 break;
@@ -1323,15 +1336,21 @@ internal sealed class FarmhandHelper
 
             case TaskKind.CutGrass:
             {
-                if (farm.terrainFeatures.TryGetValue(tile, out TerrainFeature? grassFeature) && grassFeature is Grass grass)
+                // The player clears a whole clump in one visible swing (the swing's animation
+                // frames hit the same grass several times), so do the same: burst-cut the clump
+                // in this one work cycle. Each cut rolls hay into the silo exactly like vanilla.
+                for (int i = 0; i < 8; i++)
                 {
-                    // Vanilla scythe cut: handles the hay roll and silo deposit internally.
-                    if (grass.performToolAction(this.GetHelperScythe(), 0, tile))
-                        farm.terrainFeatures.Remove(tile);
+                    if (farm.GetHayCapacity() - farm.piecesOfHay.Value <= 0)
+                        break;
+                    if (!farm.terrainFeatures.TryGetValue(tile, out TerrainFeature? grassFeature) || grassFeature is not Grass grass)
+                        break;
 
-                    bool siloHasRoom = farm.GetHayCapacity() - farm.piecesOfHay.Value > 0;
-                    if (siloHasRoom && farm.terrainFeatures.TryGetValue(tile, out TerrainFeature? still) && still is Grass)
-                        this.tasks.Add(task); // clump not finished: keep swinging
+                    if (grass.performToolAction(this.GetHelperScythe(), 0, tile))
+                    {
+                        farm.terrainFeatures.Remove(tile);
+                        break;
+                    }
                 }
                 break;
             }
@@ -1353,9 +1372,12 @@ internal sealed class FarmhandHelper
             }
         }
 
-        // Scoop up whatever his work just knocked loose around this tile.
-        if (this.config().HelperHaulsDrops && task.Kind is TaskKind.ChopTree or TaskKind.BreakStone or TaskKind.ClearWeeds)
+        // Scoop up whatever his work just knocked loose around this tile (skip while staying:
+        // one sweep when the target finally breaks is enough).
+        if (!stay && this.config().HelperHaulsDrops && task.Kind is TaskKind.ChopTree or TaskKind.BreakStone or TaskKind.ClearWeeds)
             this.CollectNearbyDebris(farm, task.Tile, radius: 4);
+
+        return stay;
     }
 
     /// <summary>Collect a machine's finished output into chests, mirroring the vanilla
