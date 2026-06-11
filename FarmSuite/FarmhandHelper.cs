@@ -1071,6 +1071,7 @@ internal sealed class FarmhandHelper
                     return;
 
                 string seedId = dirt.crop.netSeedIndex.Value ?? "";
+                string harvestId = dirt.crop.indexOfHarvest.Value ?? "";
                 bool regrows = dirt.crop.RegrowsAfterHarvest();
 
                 // Crop.harvest with a junimoHarvester computes vanilla quality/stack/extra drops
@@ -1080,7 +1081,20 @@ internal sealed class FarmhandHelper
                 this.chestJunimo.Outputs.Clear();
                 this.chestJunimo.Outputs.AddRange(chests);
 
-                if (dirt.crop.harvest(task.Tile.X, task.Tile.Y, dirt, this.chestJunimo))
+                bool spent = dirt.crop.harvest(task.Tile.X, task.Tile.Y, dirt, this.chestJunimo);
+                bool succeeded = spent || !dirt.readyForHarvest(); // regrow crops return false on a successful pick
+
+                // Vanilla skips the farming XP when a junimo harvests — re-grant it to the player
+                // using the same formula as Crop.harvest (16 * ln(0.018 * price + 1)).
+                if (succeeded && harvestId.Length > 0
+                    && ItemRegistry.Create(harvestId, allowNull: true) is StardewValley.Object produce)
+                {
+                    int xp = (int)Math.Round(16.0 * Math.Log(0.018 * produce.Price + 1.0, Math.E));
+                    if (xp > 0)
+                        Game1.MasterPlayer.gainExperience(0, xp);
+                }
+
+                if (spent)
                 {
                     dirt.destroyCrop(farm.farmers.Any());
 
