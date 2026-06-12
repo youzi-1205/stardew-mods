@@ -14,9 +14,20 @@ foreach ($mod in $mods) {
     $path = Join-Path $root $mod
     Write-Host "Building $mod..."
     Push-Location $path
-    dotnet restore
-    dotnet build -c Release
-    Pop-Location
+    try {
+        dotnet restore
+        if ($LASTEXITCODE -ne 0) {
+            throw "dotnet restore failed for $mod with exit code $LASTEXITCODE."
+        }
+
+        dotnet build -c Release
+        if ($LASTEXITCODE -ne 0) {
+            throw "dotnet build failed for $mod with exit code $LASTEXITCODE."
+        }
+    }
+    finally {
+        Pop-Location
+    }
 }
 
 Write-Host ""

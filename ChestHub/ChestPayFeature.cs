@@ -72,8 +72,7 @@ internal sealed class ChestPayFeature
         if (this.locationSession)
             return;
 
-        bool newRelevant = IsRelevantMenu(e.NewMenu);
-        bool oldRelevant = IsRelevantMenu(e.OldMenu);
+        bool newRelevant = this.IsRelevantMenu(e.NewMenu);
 
         if (newRelevant && !this.sessionActive)
         {
@@ -84,7 +83,7 @@ internal sealed class ChestPayFeature
 
             // Robin's HOUSE UPGRADE is a plain dialogue (not a CarpenterMenu): front the materials
             // as soon as her question dialogue opens, so answering "yes" just works.
-            if (e.NewMenu is DialogueBox && Game1.currentLocation?.Name == "ScienceHouse")
+            if (this.IsRobinHouseUpgradePrompt(e.NewMenu))
             {
                 switch (Game1.player.HouseUpgradeLevel)
                 {
@@ -102,7 +101,7 @@ internal sealed class ChestPayFeature
                 }
             }
         }
-        else if (!newRelevant && oldRelevant && this.sessionActive)
+        else if (!newRelevant && this.sessionActive)
         {
             this.EndSession(returnItems: true);
         }
@@ -123,10 +122,125 @@ internal sealed class ChestPayFeature
         this.warnedNoSpace = false;
     }
 
-    private static bool IsRelevantMenu(IClickableMenu? menu)
+    private bool IsRelevantMenu(IClickableMenu? menu)
     {
         return menu is ShopMenu or CarpenterMenu
-            || (menu is DialogueBox && Game1.currentLocation?.Name == "ScienceHouse");
+            || this.IsRobinHouseUpgradePrompt(menu);
+    }
+
+    private bool IsRobinHouseUpgradePrompt(IClickableMenu? menu)
+    {
+        if (menu is not DialogueBox dialogue)
+            return false;
+        if (Game1.currentLocation?.Name != "ScienceHouse")
+            return false;
+        if (!string.Equals(Game1.currentSpeaker?.Name, "Robin", StringComparison.OrdinalIgnoreCase))
+            return false;
+        if (!PlayerCanBuyHouseUpgrade())
+            return false;
+
+        // Normal Robin chatter and her shop-choice dialogue shouldn't pull hundreds of materials
+        // into the backpack. The actual house/community-upgrade confirmation is a yes/no prompt.
+        return DialogueHasAffirmativeResponse(dialogue);
+    }
+
+    private static bool PlayerCanBuyHouseUpgrade()
+    {
+        if (Game1.player.HouseUpgradeLevel < 2)
+            return true;
+
+        return !Game1.MasterPlayer.mailReceived.Contains("pamHouseUpgrade");
+    }
+
+    private static bool DialogueHasAffirmativeResponse(DialogueBox dialogue)
+    {
+        foreach (object response in GetDialogueResponses(dialogue))
+        {
+            foreach (string text in GetResponseStrings(response))
+            {
+                if (IsAffirmativeResponse(text))
+                    return true;
+            }
+        }
+
+        return false;
+    }
+
+    private static IEnumerable<object> GetDialogueResponses(DialogueBox dialogue)
+    {
+        const System.Reflection.BindingFlags flags =
+            System.Reflection.BindingFlags.Instance
+            | System.Reflection.BindingFlags.Public
+            | System.Reflection.BindingFlags.NonPublic;
+
+        foreach (System.Reflection.FieldInfo field in dialogue.GetType().GetFields(flags))
+        {
+            if (!field.Name.Contains("response", StringComparison.OrdinalIgnoreCase))
+                continue;
+            object? rawValue = field.GetValue(dialogue);
+            if (rawValue is string || rawValue is not System.Collections.IEnumerable values)
+                continue;
+
+            foreach (object? value in values)
+            {
+                if (value != null)
+                    yield return value;
+            }
+        }
+    }
+
+    private static IEnumerable<string> GetResponseStrings(object response)
+    {
+        const System.Reflection.BindingFlags flags =
+            System.Reflection.BindingFlags.Instance
+            | System.Reflection.BindingFlags.Public
+            | System.Reflection.BindingFlags.NonPublic;
+
+        foreach (System.Reflection.FieldInfo field in response.GetType().GetFields(flags))
+        {
+            if (!LooksLikeResponseTextMember(field.Name))
+                continue;
+            if (field.GetValue(response) is string text)
+                yield return text;
+        }
+
+        foreach (System.Reflection.PropertyInfo property in response.GetType().GetProperties(flags))
+        {
+            if (!LooksLikeResponseTextMember(property.Name) || property.GetIndexParameters().Length > 0)
+                continue;
+
+            string? text = null;
+            try
+            {
+                text = property.GetValue(response) as string;
+            }
+            catch
+            {
+                // Some reflected properties can be stateful; ignore anything we can't read safely.
+            }
+
+            if (text != null)
+                yield return text;
+        }
+    }
+
+    private static bool LooksLikeResponseTextMember(string name)
+    {
+        return name.Contains("key", StringComparison.OrdinalIgnoreCase)
+            || name.Contains("text", StringComparison.OrdinalIgnoreCase)
+            || name.Contains("response", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool IsAffirmativeResponse(string text)
+    {
+        string value = text.Trim();
+        return value.Equals("Yes", StringComparison.OrdinalIgnoreCase)
+            || value.Equals("OK", StringComparison.OrdinalIgnoreCase)
+            || value.Equals("Accept", StringComparison.OrdinalIgnoreCase)
+            || value.Equals("Confirm", StringComparison.OrdinalIgnoreCase)
+            || value.Equals("是", StringComparison.OrdinalIgnoreCase)
+            || value.Equals("好的", StringComparison.OrdinalIgnoreCase)
+            || value.Equals("确定", StringComparison.OrdinalIgnoreCase);
     }
 
     private void OnUpdateTicked(object? sender, UpdateTickedEventArgs e)

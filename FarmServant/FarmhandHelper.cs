@@ -45,6 +45,7 @@ internal sealed class FarmhandHelper
     private enum TaskKind { Water, Harvest, Fertilize, Plant, ChopTree, BreakStone, ClearWeeds, TendAnimals, Deliver, CollectMachine, CollectBuilding, CutGrass }
 
     private sealed record FarmTask(TaskKind Kind, Point Tile, string? ItemId = null, string? LocationName = null);
+    private sealed record WorkDebrisSite(Point Tile, HashSet<Debris> ExistingDebris);
 
     private const string NpcName = "FarmSuiteHelper";
     private const string NpcTextureName = "FarmSuiteHelper";
@@ -82,7 +83,7 @@ internal sealed class FarmhandHelper
     private bool autoStartedToday;
     private int presenceTicks;
     private readonly List<Item> carried = new();
-    private readonly List<Point> recentWorkTiles = new();
+    private readonly List<WorkDebrisSite> recentWorkSites = new();
     private bool warnedChestsFull;
     private Point corner = new(67, 17);
     private Tool? helperAxe;
@@ -461,7 +462,7 @@ internal sealed class FarmhandHelper
         this.returningToCorner = false;
         this.summonedToPlayer = false;
         this.tasks.Clear();
-        this.recentWorkTiles.Clear();
+        this.recentWorkSites.Clear();
     }
 
     private void SweepStrays()
@@ -502,7 +503,7 @@ internal sealed class FarmhandHelper
         this.summonedToPlayer = false;
         this.autoStartedToday = false;
         this.tasks.Clear();
-        this.recentWorkTiles.Clear();
+        this.recentWorkSites.Clear();
         this.warnedChestsFull = false;
         this.presenceTicks = 0;
         this.chestJunimo.Deposit = null;
@@ -634,7 +635,7 @@ internal sealed class FarmhandHelper
             this.npc.controller = null;
             this.npc.Halt();
             this.current = null;
-            this.recentWorkTiles.Clear();
+            this.recentWorkSites.Clear();
             this.npc.showTextAboveHead("行，先歇会儿。");
             return;
         }
@@ -1103,7 +1104,7 @@ internal sealed class FarmhandHelper
             this.working = false;
             this.returningToCorner = false;
             this.summonedToPlayer = false;
-            this.recentWorkTiles.Clear();
+            this.recentWorkSites.Clear();
             this.npc.faceDirection(2);
             this.npc.showTextAboveHead("活儿干完啦！");
             Game1.addHUDMessage(HUDMessage.ForCornerTextbox($"{this.config().HelperName}把今天的农活干完了。"));
@@ -1340,9 +1341,9 @@ internal sealed class FarmhandHelper
         bool stay = false;
 
         if (task.Kind is TaskKind.ChopTree or TaskKind.BreakStone or TaskKind.ClearWeeds
-            && this.config().HelperHaulsDrops && !this.recentWorkTiles.Contains(task.Tile))
+            && this.config().HelperHaulsDrops && !this.recentWorkSites.Any(site => site.Tile == task.Tile))
         {
-            this.recentWorkTiles.Add(task.Tile);
+            this.RememberWorkSite(farm, task.Tile);
         }
 
         switch (task.Kind)
@@ -1426,7 +1427,7 @@ internal sealed class FarmhandHelper
         // Scoop up whatever his work just knocked loose around this tile (skip while staying:
         // one sweep when the target finally breaks is enough).
         if (!stay && this.config().HelperHaulsDrops && task.Kind is TaskKind.ChopTree or TaskKind.BreakStone or TaskKind.ClearWeeds)
-            this.CollectNearbyDebris(farm, task.Tile, radius: 8);
+            this.CollectNearbyDebris(farm, task.Tile, radius: 8, this.GetExistingDebrisAtWorkSite(task.Tile));
 
         return stay;
     }
@@ -1563,7 +1564,17 @@ internal sealed class FarmhandHelper
 
     // ── drop hauling: pick up his own debris and walk it to a sensible chest ──
 
-    private void CollectNearbyDebris(Farm farm, Point tile, int radius)
+    private void RememberWorkSite(Farm farm, Point tile)
+    {
+        this.recentWorkSites.Add(new WorkDebrisSite(tile, farm.debris.ToHashSet()));
+    }
+
+    private HashSet<Debris>? GetExistingDebrisAtWorkSite(Point tile)
+    {
+        return this.recentWorkSites.FirstOrDefault(site => site.Tile == tile)?.ExistingDebris;
+    }
+
+    private void CollectNearbyDebris(Farm farm, Point tile, int radius, HashSet<Debris>? existingDebris = null)
     {
         var center = new Vector2(tile.X * 64 + 32, tile.Y * 64 + 32);
         float maxDistance = radius * 64f;
@@ -1572,6 +1583,8 @@ internal sealed class FarmhandHelper
         for (int i = farm.debris.Count - 1; i >= 0; i--)
         {
             Debris debris = farm.debris[i];
+            if (existingDebris?.Contains(debris) == true)
+                continue;
             if (debris.Chunks.Count == 0)
                 continue;
             if (!debris.Chunks.Any(chunk => Vector2.Distance(chunk.position.Value, center) <= maxDistance))
@@ -1593,8 +1606,8 @@ internal sealed class FarmhandHelper
 
     private void SweepRecentWorkDebris(Farm farm, int radius)
     {
-        foreach (Point workTile in this.recentWorkTiles)
-            this.CollectNearbyDebris(farm, workTile, radius);
+        foreach (WorkDebrisSite site in this.recentWorkSites)
+            this.CollectNearbyDebris(farm, site.Tile, radius, site.ExistingDebris);
     }
 
     /// <summary>Convert a debris entry into the items a player would get from collecting it.</summary>
@@ -1604,8 +1617,6 @@ internal sealed class FarmhandHelper
 
         if (debris.item != null)
         {
-            result.Add(debris.item);
-            debris.item = null;
             return result;
         }
 
