@@ -1,7 +1,7 @@
 {
   "Name": "万能仓储",
   "Author": "youzi",
-  "Version": "1.0.0",
+  "Version": "1.0.1",
   "Description": "箱子相关便利合集：制作/烹饪直接用箱子材料、物品支付自动从箱子调料、机器一键补货、按 K 查看全部库存。",
   "UniqueID": "Codex.ChestHub",
   "EntryDll": "ChestHub.dll",
