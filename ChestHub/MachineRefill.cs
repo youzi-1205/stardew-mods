@@ -130,17 +130,17 @@ internal sealed class MachineRefill
         // Feed the loader copied stacks from every chest, then apply the consumed amounts back to
         // the real chest inventories. This keeps vanilla machine matching without sharing Item
         // references between the temporary inventory and the source chests.
-        List<Chest> chests = GetSourceChests(location);
+        List<IInventory> sourceInventories = GetSourceInventories();
         var combined = new Inventory();
         var aggregateStacks = new List<AggregateStack>();
-        foreach (Chest chest in chests)
+        foreach (IInventory sourceInventory in sourceInventories)
         {
-            foreach (Item? item in chest.GetItemsForPlayer())
+            foreach (Item? item in sourceInventory)
             {
                 if (item == null || item.Stack <= 0)
                     continue;
 
-                AddToAggregatedInventory(combined, aggregateStacks, chest, item);
+                AddToAggregatedInventory(combined, aggregateStacks, sourceInventory, item);
             }
         }
 
@@ -168,7 +168,7 @@ internal sealed class MachineRefill
         Game1.addHUDMessage(HUDMessage.ForCornerTextbox("箱子里没有这台机器需要的材料。"));
     }
 
-    private static void AddToAggregatedInventory(Inventory combined, List<AggregateStack> aggregateStacks, Chest chest, Item source)
+    private static void AddToAggregatedInventory(Inventory combined, List<AggregateStack> aggregateStacks, IInventory sourceInventory, Item source)
     {
         int remaining = source.Stack;
         while (remaining > 0)
@@ -190,7 +190,7 @@ internal sealed class MachineRefill
                 ? added
                 : aggregateStack.Copy.Stack + added;
             aggregateStack.InitialStack += added;
-            aggregateStack.Sources.Add(new SourceStack(chest, source, source.QualifiedItemId, added));
+            aggregateStack.Sources.Add(new SourceStack(sourceInventory, source, source.QualifiedItemId, added));
             remaining -= added;
         }
     }
@@ -206,10 +206,9 @@ internal sealed class MachineRefill
                 break;
 
             int take = Math.Min(remaining, sourceStack.Contributed);
-            IInventory items = sourceStack.Chest.GetItemsForPlayer();
-            int removed = items.Reduce(sourceStack.Source, take, reduceRemainderFromInventory: false);
+            int removed = sourceStack.Inventory.Reduce(sourceStack.Source, take, reduceRemainderFromInventory: false);
             if (removed < take)
-                removed += items.ReduceId(sourceStack.ItemId, take - removed);
+                removed += sourceStack.Inventory.ReduceId(sourceStack.ItemId, take - removed);
 
             removedTotal += removed;
             remaining -= removed;
@@ -230,27 +229,38 @@ internal sealed class MachineRefill
         public List<SourceStack> Sources { get; } = new();
     }
 
-    private sealed record SourceStack(Chest Chest, Item Source, string ItemId, int Contributed);
+    private sealed record SourceStack(IInventory Inventory, Item Source, string ItemId, int Contributed);
 
-    private static List<Chest> GetSourceChests(GameLocation location)
+    private static List<IInventory> GetSourceInventories()
     {
-        var chests = new List<Chest>();
-        void Collect(GameLocation loc)
+        var inventories = new List<IInventory>();
+        void AddInventory(IInventory inventory)
         {
-            foreach (StardewValley.Object obj in loc.objects.Values)
-            {
-                if (obj is Chest chest && chest.playerChest.Value
-                    && chest.SpecialChestType is Chest.SpecialChestTypes.None or Chest.SpecialChestTypes.BigChest
-                    && !chests.Contains(chest))
-                {
-                    chests.Add(chest);
-                }
-            }
+            if (!inventories.Any(existing => ReferenceEquals(existing, inventory)))
+                inventories.Add(inventory);
         }
 
-        Collect(location);
-        if (location is not Farm)
-            Collect(Game1.getFarm());
-        return chests;
+        Utility.ForEachLocation(location =>
+        {
+            foreach (StardewValley.Object obj in location.objects.Values)
+            {
+                if (obj is Chest chest && chest.playerChest.Value
+                    && IsUsableStorage(chest))
+                {
+                    AddInventory(chest.GetItemsForPlayer());
+                }
+            }
+
+            return true;
+        }, includeInteriors: true);
+
+        return inventories;
+    }
+
+    private static bool IsUsableStorage(Chest chest)
+    {
+        return chest.SpecialChestType is Chest.SpecialChestTypes.None
+            or Chest.SpecialChestTypes.BigChest
+            or Chest.SpecialChestTypes.JunimoChest;
     }
 }
