@@ -1,7 +1,14 @@
 $ErrorActionPreference = "Stop"
 
 $root = Split-Path -Parent $MyInvocation.MyCommand.Path
-$mods = @("BirthdayGiftReminder", "FishingAssist")
+$mods = @(
+    "AutoFish",
+    "AutoWalk",
+    "BirthdayGiftReminder",
+    "ChestHub",
+    "FarmServant",
+    "NoTerminal"
+)
 
 foreach ($mod in $mods) {
     $path = Join-Path $root $mod

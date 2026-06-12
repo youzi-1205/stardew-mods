@@ -12,7 +12,6 @@
 
   <ItemGroup>
     <None Update="manifest.json" CopyToOutputDirectory="Always" />
-    <None Update="config.json" CopyToOutputDirectory="PreserveNewest" />
     <None Update="README.md" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 </Project>

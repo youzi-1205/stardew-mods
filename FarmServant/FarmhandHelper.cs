@@ -202,7 +202,9 @@ internal sealed class FarmhandHelper
 
         farm.addCharacter(npc);
         this.npc = npc;
-        this.visualFarmer = this.CreateVisualFarmer(npc);
+        this.visualFarmer = this.UsesGeneratedFarmerAppearance()
+            ? this.CreateVisualFarmer(npc)
+            : null;
 
         this.working = false;
         this.returningToCorner = false;
@@ -276,7 +278,13 @@ internal sealed class FarmhandHelper
 
     private string GetHelperSpriteAsset()
     {
-        return DefaultSpriteAsset;
+        string sprite = NormalizeAssetName(this.config().HelperSprite);
+        return string.IsNullOrWhiteSpace(sprite) ? DefaultSpriteAsset : sprite;
+    }
+
+    private bool UsesGeneratedFarmerAppearance()
+    {
+        return NormalizeAssetName(this.GetHelperSpriteAsset()).Equals(CustomSpriteAsset, StringComparison.OrdinalIgnoreCase);
     }
 
     private string GetHelperPortraitAsset(string spriteAsset)
@@ -439,6 +447,8 @@ internal sealed class FarmhandHelper
 
     private void RemoveNpc()
     {
+        if (Context.IsWorldReady && Game1.IsMasterGame)
+            this.SweepRecentWorkDebris(Game1.getFarm(), radius: 8);
         this.FlushCarried(); // never let carried items vanish with him
         if (this.npc != null)
         {
@@ -448,7 +458,9 @@ internal sealed class FarmhandHelper
         this.visualFarmer = null;
         this.working = false;
         this.current = null;
+        this.returningToCorner = false;
         this.summonedToPlayer = false;
+        this.tasks.Clear();
         this.recentWorkTiles.Clear();
     }
 
@@ -472,13 +484,29 @@ internal sealed class FarmhandHelper
 
     private void Reset()
     {
+        if (Context.IsWorldReady && Game1.IsMasterGame)
+        {
+            this.SweepRecentWorkDebris(Game1.getFarm(), radius: 8);
+            this.FlushCarried();
+        }
+        else
+        {
+            this.carried.Clear();
+        }
+
         this.npc = null;
         this.visualFarmer = null;
         this.working = false;
         this.current = null;
+        this.returningToCorner = false;
         this.summonedToPlayer = false;
         this.autoStartedToday = false;
         this.tasks.Clear();
+        this.recentWorkTiles.Clear();
+        this.warnedChestsFull = false;
+        this.presenceTicks = 0;
+        this.chestJunimo.Deposit = null;
+        this.chestJunimo.currentLocation = null;
     }
 
     // ── interaction: poke him to start (or pause) the day's work ────────────
@@ -597,10 +625,16 @@ internal sealed class FarmhandHelper
 
         if (answer == "stop")
         {
+            this.SweepRecentWorkDebris(farm, radius: 8);
+            this.FlushCarried();
+            this.tasks.Clear();
             this.working = false;
+            this.returningToCorner = false;
+            this.summonedToPlayer = false;
             this.npc.controller = null;
             this.npc.Halt();
             this.current = null;
+            this.recentWorkTiles.Clear();
             this.npc.showTextAboveHead("行，先歇会儿。");
             return;
         }
@@ -637,7 +671,7 @@ internal sealed class FarmhandHelper
                 this.AddTreeTasks(this.tasks, farm, center, radius);
                 break;
             case "daily":
-                this.BuildTaskQueue(farm);
+                this.BuildTaskQueue(farm, includeDebris: this.config().HelperClearsDebris);
                 nearby = false;
                 break;
             default:
@@ -667,7 +701,7 @@ internal sealed class FarmhandHelper
 
     // ── day-start scan ───────────────────────────────────────────────────────
 
-    private void BuildTaskQueue(Farm farm, bool includeDebris = false, bool includeAnimals = true)
+    private void BuildTaskQueue(Farm farm, bool includeDebris = true, bool includeAnimals = true)
     {
         this.tasks.Clear();
         this.AddCropTasks(this.tasks, farm, center: null, radius: int.MaxValue);
@@ -1003,7 +1037,7 @@ internal sealed class FarmhandHelper
         if (!this.working && !this.autoStartedToday && this.config().HelperAutoStartDaily && Game1.timeOfDay >= 610)
         {
             this.autoStartedToday = true;
-            this.BuildTaskQueue(Game1.getFarm());
+            this.BuildTaskQueue(Game1.getFarm(), includeDebris: this.config().HelperClearsDebris);
             if (this.tasks.Count > 0)
             {
                 this.working = true;
@@ -1054,9 +1088,22 @@ internal sealed class FarmhandHelper
 
         if (this.returningToCorner)
         {
+            if (this.config().HelperHaulsDrops)
+            {
+                Farm farm = Game1.getFarm();
+                this.SweepRecentWorkDebris(farm, radius: 8);
+                if (this.TryPlanDelivery(farm))
+                {
+                    this.returningToCorner = false;
+                    this.StartNextTask();
+                    return;
+                }
+            }
+
             this.working = false;
             this.returningToCorner = false;
             this.summonedToPlayer = false;
+            this.recentWorkTiles.Clear();
             this.npc.faceDirection(2);
             this.npc.showTextAboveHead("活儿干完啦！");
             Game1.addHUDMessage(HUDMessage.ForCornerTextbox($"{this.config().HelperName}把今天的农活干完了。"));
@@ -1111,9 +1158,7 @@ internal sealed class FarmhandHelper
         // later and a few tiles away), then haul everything to chests before knocking off.
         if (this.config().HelperHaulsDrops)
         {
-            foreach (Point workTile in this.recentWorkTiles)
-                this.CollectNearbyDebris(farm, workTile, radius: 6);
-            this.recentWorkTiles.Clear();
+            this.SweepRecentWorkDebris(farm, radius: 8);
 
             if (this.TryPlanDelivery(farm))
             {
@@ -1149,7 +1194,7 @@ internal sealed class FarmhandHelper
 
             return task.Kind switch
             {
-                TaskKind.Water => dirt.crop != null && dirt.state.Value != HoeDirt.watered,
+                TaskKind.Water => dirt.crop != null && !dirt.crop.dead.Value && dirt.state.Value != HoeDirt.watered && dirt.needsWatering(),
                 TaskKind.Harvest => dirt.readyForHarvest(),
                 TaskKind.Fertilize => dirt.crop != null && string.IsNullOrEmpty(dirt.fertilizer.Value),
                 TaskKind.Plant => dirt.crop == null,
@@ -1248,6 +1293,10 @@ internal sealed class FarmhandHelper
                         this.tasks.Add(new FarmTask(TaskKind.Plant, task.Tile, seedId));
                     }
                 }
+                else if (succeeded)
+                {
+                    this.QueueWaterTaskIfNeeded(farm, dirt, task.Tile);
+                }
                 break;
             }
 
@@ -1276,6 +1325,7 @@ internal sealed class FarmhandHelper
                 farm.playSound("dirtyHit");
                 Game1.stats.SeedsSown++;
                 ConsumeFromChests(chests, seed, 1);
+                this.QueueWaterTaskIfNeeded(farm, dirt, task.Tile);
                 break;
             }
         }
@@ -1376,9 +1426,19 @@ internal sealed class FarmhandHelper
         // Scoop up whatever his work just knocked loose around this tile (skip while staying:
         // one sweep when the target finally breaks is enough).
         if (!stay && this.config().HelperHaulsDrops && task.Kind is TaskKind.ChopTree or TaskKind.BreakStone or TaskKind.ClearWeeds)
-            this.CollectNearbyDebris(farm, task.Tile, radius: 4);
+            this.CollectNearbyDebris(farm, task.Tile, radius: 8);
 
         return stay;
+    }
+
+    private void QueueWaterTaskIfNeeded(Farm farm, HoeDirt dirt, Point tile)
+    {
+        if (farm.IsRainingHere() || dirt.crop == null || dirt.crop.dead.Value || dirt.state.Value == HoeDirt.watered || !dirt.needsWatering())
+            return;
+        if (this.tasks.Any(task => task.Kind == TaskKind.Water && task.Tile == tile))
+            return;
+
+        this.tasks.Add(new FarmTask(TaskKind.Water, tile));
     }
 
     /// <summary>Collect a machine's finished output into chests, mirroring the vanilla
@@ -1514,8 +1574,7 @@ internal sealed class FarmhandHelper
             Debris debris = farm.debris[i];
             if (debris.Chunks.Count == 0)
                 continue;
-            Vector2 position = debris.Chunks[0].position.Value;
-            if (Vector2.Distance(position, center) > maxDistance)
+            if (!debris.Chunks.Any(chunk => Vector2.Distance(chunk.position.Value, center) <= maxDistance))
                 continue;
 
             List<Item> items = ExtractDebrisItems(debris);
@@ -1530,6 +1589,12 @@ internal sealed class FarmhandHelper
 
         if (pickedAny)
             farm.playSound("pickUpItem");
+    }
+
+    private void SweepRecentWorkDebris(Farm farm, int radius)
+    {
+        foreach (Point workTile in this.recentWorkTiles)
+            this.CollectNearbyDebris(farm, workTile, radius);
     }
 
     /// <summary>Convert a debris entry into the items a player would get from collecting it.</summary>
@@ -1716,8 +1781,15 @@ internal sealed class FarmhandHelper
         if (this.carried.Count == 0)
             return;
 
+        if (!Context.IsWorldReady)
+        {
+            this.carried.Clear();
+            return;
+        }
+
         Farm farm = Game1.getFarm();
         List<Chest> chests = GetFarmChests(farm);
+        Vector2 dropPosition = this.npc?.Position ?? this.corner.ToVector2() * 64f;
 
         for (int i = this.carried.Count - 1; i >= 0; i--)
         {
@@ -1729,8 +1801,8 @@ internal sealed class FarmhandHelper
                     break;
             }
 
-            if (remaining != null && this.npc != null)
-                Game1.createItemDebris(remaining, this.npc.Position, -1, farm);
+            if (remaining != null)
+                Game1.createItemDebris(remaining, dropPosition, -1, farm);
 
             this.carried.RemoveAt(i);
         }
@@ -2095,6 +2167,8 @@ internal sealed class FarmhandHelper
         if (!Context.IsWorldReady || this.npc == null)
             return;
         if (Game1.currentLocation != this.npc.currentLocation)
+            return;
+        if (!this.UsesGeneratedFarmerAppearance())
             return;
 
         Farmer farmer = this.GetVisualFarmer();

@@ -30,13 +30,8 @@ internal sealed class ChestPayFeature
         helper.Events.Display.MenuChanged += this.OnMenuChanged;
         helper.Events.GameLoop.UpdateTicked += this.OnUpdateTicked;
         helper.Events.Player.Warped += this.OnWarped;
-        helper.Events.GameLoop.ReturnedToTitle += (_, _) =>
-        {
-            this.pulled.Clear();
-            this.announced.Clear();
-            this.sessionActive = false;
-            this.locationSession = false;
-        };
+        helper.Events.GameLoop.Saving += (_, _) => this.EndSession(returnItems: true);
+        helper.Events.GameLoop.ReturnedToTitle += (_, _) => this.EndSession(returnItems: Context.IsWorldReady);
     }
 
     /// <summary>Willy's boat repair checks your items the instant you CLICK a boat part (before any
@@ -66,8 +61,7 @@ internal sealed class ChestPayFeature
         }
         else if (this.locationSession)
         {
-            this.ReturnLeftovers();
-            this.locationSession = false;
+            this.EndSession(returnItems: true);
         }
     }
 
@@ -110,9 +104,23 @@ internal sealed class ChestPayFeature
         }
         else if (!newRelevant && oldRelevant && this.sessionActive)
         {
-            this.ReturnLeftovers();
-            this.sessionActive = false;
+            this.EndSession(returnItems: true);
         }
+    }
+
+    private void EndSession(bool returnItems)
+    {
+        if (returnItems && Context.IsWorldReady && this.pulled.Count > 0)
+            this.ReturnLeftovers();
+        else
+        {
+            this.pulled.Clear();
+            this.announced.Clear();
+        }
+
+        this.sessionActive = false;
+        this.locationSession = false;
+        this.warnedNoSpace = false;
     }
 
     private static bool IsRelevantMenu(IClickableMenu? menu)
@@ -142,7 +150,7 @@ internal sealed class ChestPayFeature
     private void TopUpForShopHover(ShopMenu shop)
     {
         ISalable? hovered = shop.hoveredItem;
-        if (hovered == null || !shop.itemPriceAndStock.TryGetValue(hovered, out ItemStockInformation stock))
+        if (hovered == null || !shop.itemPriceAndStock.TryGetValue(hovered, out ItemStockInformation? stock) || stock == null)
             return;
 
         string? tradeItem = stock.TradeItem;

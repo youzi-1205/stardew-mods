@@ -127,31 +127,42 @@ internal sealed class MachineRefill
         if (!location.objects.TryGetValue(new Vector2(this.machineTile.X, this.machineTile.Y), out StardewValley.Object? machine))
             return;
 
-        // Feed the loader a COMBINED view over every chest (the Item instances are shared, so
-        // consumption hits the real stacks) — ore in one chest and coal in another both count.
+        // Feed the loader copied stacks from every chest, then apply the consumed amounts back to
+        // the real chest inventories. This keeps vanilla machine matching without sharing Item
+        // references between the temporary inventory and the source chests.
         List<Chest> chests = GetSourceChests(location);
         var combined = new Inventory();
+        var sourceStacks = new List<SourceStack>();
         foreach (Chest chest in chests)
         {
             foreach (Item? item in chest.GetItemsForPlayer())
             {
-                if (item != null)
-                    combined.Add(item);
+                if (item == null || item.Stack <= 0)
+                    continue;
+
+                Item copy = item.getOne();
+                copy.Stack = item.Stack;
+                combined.Add(copy);
+                sourceStacks.Add(new SourceStack(chest, item, item.QualifiedItemId, item.Stack, copy));
             }
         }
 
         if (machine.AttemptAutoLoad(combined, Game1.player))
         {
-            // Fully consumed stacks leave zero-stack ghosts behind in the source chests — sweep them.
-            foreach (Chest chest in chests)
+            foreach (SourceStack sourceStack in sourceStacks)
             {
-                IInventory items = chest.GetItemsForPlayer();
-                for (int i = items.Count - 1; i >= 0; i--)
-                {
-                    if (items[i] != null && items[i].Stack <= 0)
-                        items[i] = null;
-                }
-                items.RemoveEmptySlots();
+                int remaining = combined.Contains(sourceStack.Copy)
+                    ? Math.Max(0, sourceStack.Copy.Stack)
+                    : 0;
+                int consumed = sourceStack.InitialStack - remaining;
+                if (consumed <= 0)
+                    continue;
+
+                int removed = sourceStack.Chest.GetItemsForPlayer().Reduce(sourceStack.Source, consumed, reduceRemainderFromInventory: false);
+                if (removed < consumed)
+                    removed += sourceStack.Chest.GetItemsForPlayer().ReduceId(sourceStack.ItemId, consumed - removed);
+                if (removed < consumed)
+                    this.monitor.Log($"Machine refill consumed {consumed} x {sourceStack.ItemId}, but only {removed} could be removed from the source chest.", LogLevel.Warn);
             }
 
             Game1.addHUDMessage(HUDMessage.ForCornerTextbox($"已为「{machine.DisplayName}」补货并启动。"));
@@ -161,6 +172,8 @@ internal sealed class MachineRefill
 
         Game1.addHUDMessage(HUDMessage.ForCornerTextbox("箱子里没有这台机器需要的材料。"));
     }
+
+    private sealed record SourceStack(Chest Chest, Item Source, string ItemId, int InitialStack, Item Copy);
 
     private static List<Chest> GetSourceChests(GameLocation location)
     {

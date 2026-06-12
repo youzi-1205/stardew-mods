@@ -78,7 +78,11 @@ internal sealed class ModEntry : Mod
         this.ApplyTreasureChanceSetting();
 
         if (!this.config.EnableMod)
+        {
+            this.autoFishEnabled = false;
+            this.autoFishButtonVisible = false;
             return;
+        }
 
         FishingRod? rod = Game1.player?.CurrentTool as FishingRod;
 
