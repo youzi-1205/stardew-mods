@@ -17,6 +17,7 @@ internal sealed class ModEntry : Mod
     // Routing state.
     private bool routing;
     private string destLocation = "";
+    private string destDisplayName = "";
     private Point destTile;
     private bool finalLeg;
     private Warp? legWarp;        // the warp this leg is heading for (null on the final leg)
@@ -49,10 +50,10 @@ internal sealed class ModEntry : Mod
         MapPage? page = this.GetOpenMapPage();
         if (page != null)
         {
-            if (e.Button == SButton.MouseLeft && this.TryResolveMapClick(page, out string loc, out Point tile))
+            if (e.Button == SButton.MouseLeft && this.TryResolveMapClick(page, out string loc, out Point tile, out string displayName))
             {
                 this.Helper.Input.Suppress(e.Button);
-                this.BeginRouting(loc, tile);
+                this.BeginRouting(loc, tile, displayName);
             }
             else if (e.Button == this.openMapKey)
             {
@@ -247,12 +248,13 @@ internal sealed class ModEntry : Mod
         this.StartLeg();
     }
 
-    private void BeginRouting(string locationName, Point tile)
+    private void BeginRouting(string locationName, Point tile, string displayName)
     {
         if (Game1.activeClickableMenu != null)
             Game1.exitActiveMenu();
 
         this.destLocation = locationName;
+        this.destDisplayName = string.IsNullOrWhiteSpace(displayName) ? locationName : displayName;
         this.destTile = tile;
         this.routing = true;
         this.finalLeg = false;
@@ -262,8 +264,8 @@ internal sealed class ModEntry : Mod
         this.legRetries = 0;
         this.ResetStuckWatchdog();
 
-        this.Monitor.Log($"Routing to '{locationName}' tile {tile} from '{Game1.currentLocation?.Name}'.", LogLevel.Info);
-        Game1.addHUDMessage(HUDMessage.ForCornerTextbox($"前往「{locationName}」…"));
+        this.Monitor.Log($"Routing to '{this.destDisplayName}' ({locationName} tile {tile}) from '{Game1.currentLocation?.Name}'.", LogLevel.Info);
+        Game1.addHUDMessage(HUDMessage.ForCornerTextbox($"前往「{this.destDisplayName}」…"));
         this.StartLeg();
     }
 
@@ -288,8 +290,7 @@ internal sealed class ModEntry : Mod
                 return;
             }
 
-            Point target = this.FindReachableTileNear(loc, this.destTile);
-            PathFindController? pfc = this.BuildController(target);
+            PathFindController? pfc = this.BuildFinalLegController(loc, this.destTile, out Point target);
             if (pfc == null)
                 return; // pathfinder busy; retry next idle
             if (pfc.pathToEndPoint == null)
@@ -312,15 +313,11 @@ internal sealed class ModEntry : Mod
         Warp? warp = FindNextWarp(loc.Name, this.destLocation);
         if (warp == null)
         {
-            this.StopRouting($"找不到通往「{this.destLocation}」的路线。", success: false);
+            this.StopRouting($"找不到通往「{this.destDisplayName}」的路线。", success: false);
             return;
         }
 
-        Point approach = this.FindWarpApproach(loc, warp);
-        this.legWarp = warp;
-        this.legApproach = approach;
-
-        PathFindController? legController = this.BuildController(approach);
+        PathFindController? legController = this.BuildWarpLegController(loc, warp, out Point approach);
         if (legController == null)
             return; // pathfinder busy; retry next idle
         if (legController.pathToEndPoint == null)
@@ -328,6 +325,10 @@ internal sealed class ModEntry : Mod
             this.StopRouting($"走不到通往「{warp.TargetName}」的出口。", success: false);
             return;
         }
+
+        this.legWarp = warp;
+        this.legApproach = approach;
+
         if (legController.pathToEndPoint.Count == 0)
         {
             // Already standing at the exit — warp now.
@@ -338,6 +339,52 @@ internal sealed class ModEntry : Mod
         Game1.player.controller = legController;
         this.finalLeg = false;
         this.Monitor.Log($"Leg: {loc.Name} -> {warp.TargetName} via approach {approach}.", LogLevel.Trace);
+    }
+
+    private PathFindController? BuildFinalLegController(GameLocation loc, Point desiredTile, out Point target)
+    {
+        target = this.FindReachableTileNear(loc, desiredTile);
+        PathFindController? unreachableController = null;
+
+        foreach (Point candidate in this.GetFinalTargetCandidates(loc, desiredTile))
+        {
+            PathFindController? controller = this.BuildController(candidate);
+            if (controller == null)
+                return null; // pathfinder's shared buffer is busy; try again next tick
+
+            if (controller.pathToEndPoint != null)
+            {
+                target = candidate;
+                return controller;
+            }
+
+            unreachableController ??= controller;
+        }
+
+        return unreachableController;
+    }
+
+    private PathFindController? BuildWarpLegController(GameLocation loc, Warp warp, out Point approach)
+    {
+        approach = this.FindWarpApproach(loc, warp);
+        PathFindController? unreachableController = null;
+
+        foreach (Point candidate in this.GetWarpApproachCandidates(loc, warp))
+        {
+            PathFindController? controller = this.BuildController(candidate);
+            if (controller == null)
+                return null; // pathfinder's shared buffer is busy; try again next tick
+
+            if (controller.pathToEndPoint != null)
+            {
+                approach = candidate;
+                return controller;
+            }
+
+            unreachableController ??= controller;
+        }
+
+        return unreachableController;
     }
 
     private PathFindController? BuildController(Point tile)
@@ -357,13 +404,25 @@ internal sealed class ModEntry : Mod
     /// straight out the exit instead of stopping beside it and "teleporting" through scenery.</summary>
     private Point FindWarpApproach(GameLocation loc, Warp warp)
     {
+        foreach (Point candidate in this.GetWarpApproachCandidates(loc, warp))
+            return candidate;
+
+        return new Point(warp.X, warp.Y);
+    }
+
+    private IEnumerable<Point> GetWarpApproachCandidates(GameLocation loc, Warp warp)
+    {
         int width = loc.map?.Layers[0]?.LayerWidth ?? 0;
         int height = loc.map?.Layers[0]?.LayerHeight ?? 0;
         if (width <= 0 || height <= 0)
-            return new Point(warp.X, warp.Y);
+        {
+            yield return new Point(warp.X, warp.Y);
+            yield break;
+        }
 
         int x = Math.Clamp(warp.X, 0, width - 1);
         int y = Math.Clamp(warp.Y, 0, height - 1);
+        Point edge = new(x, y);
 
         (int dx, int dy) = warp.X < 0 ? (1, 0)
             : warp.X >= width ? (-1, 0)
@@ -371,6 +430,7 @@ internal sealed class ModEntry : Mod
             : warp.Y >= height ? (0, -1)
             : (0, 0);
 
+        var yielded = new HashSet<Point>();
         if (dx != 0 || dy != 0)
         {
             for (int step = 0; step < 8; step++)
@@ -378,12 +438,20 @@ internal sealed class ModEntry : Mod
                 var candidate = new Point(x + dx * step, y + dy * step);
                 if (candidate.X < 0 || candidate.Y < 0 || candidate.X >= width || candidate.Y >= height)
                     break;
-                if (this.IsWalkable(loc, candidate))
-                    return candidate;
+                if (this.IsWalkable(loc, candidate) && yielded.Add(candidate))
+                    yield return candidate;
             }
         }
 
-        return this.FindReachableTileNear(loc, new Point(x, y));
+        Point nearest = this.FindReachableTileNear(loc, edge);
+        if (yielded.Add(nearest))
+            yield return nearest;
+
+        foreach (Point candidate in this.FindNearbyWalkableTiles(loc, edge, maxRadius: 8))
+        {
+            if (yielded.Add(candidate))
+                yield return candidate;
+        }
     }
 
     /// <summary>Find the tile nearest <paramref name="target"/> that's inside the map and walkable,
@@ -439,6 +507,52 @@ internal sealed class ModEntry : Mod
         return bestTile ?? clamped;
     }
 
+    private IEnumerable<Point> GetFinalTargetCandidates(GameLocation loc, Point target)
+    {
+        var yielded = new HashSet<Point>();
+
+        Point preferred = this.FindReachableTileNear(loc, target);
+        if (yielded.Add(preferred))
+            yield return preferred;
+
+        foreach (Point candidate in this.FindNearbyWalkableTiles(loc, target, maxRadius: 20))
+        {
+            if (yielded.Add(candidate))
+                yield return candidate;
+        }
+    }
+
+    private IEnumerable<Point> FindNearbyWalkableTiles(GameLocation loc, Point target, int maxRadius)
+    {
+        int width = loc.map?.Layers[0]?.LayerWidth ?? 0;
+        int height = loc.map?.Layers[0]?.LayerHeight ?? 0;
+        if (width <= 0 || height <= 0)
+            yield break;
+
+        Point clamped = new(Math.Clamp(target.X, 0, width - 1), Math.Clamp(target.Y, 0, height - 1));
+        for (int radius = 1; radius <= maxRadius; radius++)
+        {
+            var candidates = new List<Point>();
+            for (int dx = -radius; dx <= radius; dx++)
+            {
+                for (int dy = -radius; dy <= radius; dy++)
+                {
+                    if (Math.Abs(dx) != radius && Math.Abs(dy) != radius)
+                        continue;
+
+                    Point candidate = new(clamped.X + dx, clamped.Y + dy);
+                    if (candidate.X < 0 || candidate.Y < 0 || candidate.X >= width || candidate.Y >= height)
+                        continue;
+                    if (this.IsWalkable(loc, candidate))
+                        candidates.Add(candidate);
+                }
+            }
+
+            foreach (Point candidate in candidates.OrderBy(p => Math.Abs(p.X - clamped.X) + Math.Abs(p.Y - clamped.Y)))
+                yield return candidate;
+        }
+    }
+
     private bool IsWalkable(GameLocation loc, Point tile)
     {
         var box = new Microsoft.Xna.Framework.Rectangle(tile.X * 64 + 1, tile.Y * 64 + 1, 62, 62);
@@ -450,6 +564,7 @@ internal sealed class ModEntry : Mod
         this.routing = false;
         this.finalLeg = false;
         this.legWarp = null;
+        this.destDisplayName = "";
         this.warpPendingTicks = -1;
         this.idleTicks = 0;
         this.legRetries = 0;
@@ -565,10 +680,11 @@ internal sealed class ModEntry : Mod
         return seen.Add(key);
     }
 
-    private bool TryResolveMapClick(MapPage page, out string locationName, out Point tile)
+    private bool TryResolveMapClick(MapPage page, out string locationName, out Point tile, out string displayName)
     {
         locationName = "";
         tile = Point.Zero;
+        displayName = "";
 
         Vector2 cursor = this.Helper.Input.GetCursorPosition().GetScaledScreenPixels();
         int mx = (int)cursor.X;
@@ -604,13 +720,14 @@ internal sealed class ModEntry : Mod
         if (clickedTooltip == null)
             return false;
 
-        return this.TryResolveTooltipTarget(clickedTooltip, clickedTooltipPixels, out locationName, out tile);
+        return this.TryResolveTooltipTarget(clickedTooltip, clickedTooltipPixels, out locationName, out tile, out displayName);
     }
 
-    private bool TryResolveTooltipTarget(MapAreaTooltip tooltip, Rectangle tooltipPixels, out string locationName, out Point tile)
+    private bool TryResolveTooltipTarget(MapAreaTooltip tooltip, Rectangle tooltipPixels, out string locationName, out Point tile, out string displayName)
     {
         locationName = "";
         tile = Point.Zero;
+        displayName = StripTooltipDetails(tooltip.Text);
 
         MapAreaPosition? best = null;
         long bestScore = long.MinValue;
@@ -660,11 +777,19 @@ internal sealed class ModEntry : Mod
             return false;
         }
 
-        tile = this.ResolveTooltipTile(best, tooltipPixels, locationName);
-        if (TryGetExteriorDoorTarget(locationName, out string exteriorLocation, out Point exteriorTile))
+        if (TryResolveTooltipDoorTarget(tooltip, tooltipPixels, best, locationName, out string doorLocation, out Point doorTile))
         {
-            locationName = exteriorLocation;
-            tile = exteriorTile;
+            locationName = doorLocation;
+            tile = doorTile;
+        }
+        else
+        {
+            tile = this.ResolveTooltipTile(best, tooltipPixels, locationName);
+            if (TryGetExteriorDoorTarget(locationName, out string exteriorLocation, out Point exteriorTile))
+            {
+                locationName = exteriorLocation;
+                tile = exteriorTile;
+            }
         }
 
         // Some world-map position data carries tile areas that don't match the real map (e.g. the
@@ -707,6 +832,154 @@ internal sealed class ModEntry : Mod
             return new Rectangle(0, 0, width, height);
 
         return position.Data.ExtendedTileArea ?? Rectangle.Empty;
+    }
+
+    private static bool TryResolveTooltipDoorTarget(MapAreaTooltip tooltip, Rectangle tooltipPixels, MapAreaPosition exteriorPosition, string exteriorLocationName, out string locationName, out Point tile)
+    {
+        locationName = "";
+        tile = Point.Zero;
+
+        if (IsGenericMapTooltip(tooltip))
+            return false;
+
+        GameLocation? exterior = Game1.getLocationFromName(exteriorLocationName);
+        if (exterior == null || !exterior.IsOutdoors)
+            return false;
+
+        HashSet<string> candidates = GetTooltipTargetCandidates(tooltip);
+        Warp? bestWarp = null;
+        int bestScore = int.MaxValue;
+
+        foreach (Warp warp in GetOutgoingWarps(exterior))
+        {
+            GameLocation? target = Game1.getLocationFromName(warp.TargetName);
+            if (target == null || target.IsOutdoors)
+                continue;
+
+            bool nameMatch = IsTooltipMatchForLocation(tooltip, candidates, target);
+            Point doorTile = new(warp.X, warp.Y);
+            int mapDistance = GetMapPixelDistance(exteriorPosition, exterior, doorTile, tooltipPixels);
+            bool geometryMatch = mapDistance <= GetDoorMatchTolerance(tooltipPixels);
+            if (!nameMatch && !geometryMatch)
+                continue;
+
+            int score = mapDistance + (nameMatch ? -10_000 : 0);
+            if (score < bestScore)
+            {
+                bestScore = score;
+                bestWarp = warp;
+            }
+        }
+
+        if (bestWarp != null)
+        {
+            locationName = exteriorLocationName;
+            tile = new Point(bestWarp.X, bestWarp.Y);
+            return true;
+        }
+
+        return false;
+    }
+
+    private static bool IsGenericMapTooltip(MapAreaTooltip tooltip)
+    {
+        return tooltip.Data.Id.Equals("Default", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool IsTooltipMatchForLocation(MapAreaTooltip tooltip, HashSet<string> candidates, GameLocation target)
+    {
+        if (candidates.Contains(target.NameOrUniqueName) || candidates.Contains(target.Name))
+            return true;
+
+        string tooltipText = StripTooltipDetails(tooltip.Text);
+        return IsTextMatch(tooltipText, target.DisplayName)
+            || IsTextMatch(tooltipText, target.NameOrUniqueName)
+            || IsTextMatch(tooltipText, target.Name);
+    }
+
+    private static HashSet<string> GetTooltipTargetCandidates(MapAreaTooltip tooltip)
+    {
+        var candidates = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        AddTooltipTargetCandidate(candidates, tooltip.Data.Id);
+        AddTooltipTargetCandidate(candidates, tooltip.NamespacedId);
+        return candidates;
+    }
+
+    private static void AddTooltipTargetCandidate(HashSet<string> candidates, string? raw)
+    {
+        if (string.IsNullOrWhiteSpace(raw))
+            return;
+
+        string id = raw.Trim();
+        int slash = id.LastIndexOf('/');
+        if (slash >= 0)
+            id = id[(slash + 1)..];
+
+        if (string.IsNullOrWhiteSpace(id))
+            return;
+
+        candidates.Add(id);
+        AddKnownTooltipAliases(candidates, id);
+
+        int suffix = id.IndexOf('_');
+        if (suffix > 0)
+        {
+            string trimmed = id[..suffix];
+            candidates.Add(trimmed);
+            AddKnownTooltipAliases(candidates, trimmed);
+        }
+    }
+
+    private static void AddKnownTooltipAliases(HashSet<string> candidates, string id)
+    {
+        if (id.Equals("Spa", StringComparison.OrdinalIgnoreCase))
+        {
+            candidates.Add("BathHouse_Entry");
+            candidates.Add("BathHouse");
+        }
+        else if (id.Equals("Museum", StringComparison.OrdinalIgnoreCase))
+        {
+            candidates.Add("ArchaeologyHouse");
+        }
+    }
+
+    private static int GetMapPixelDistance(MapAreaPosition position, GameLocation location, Point tile, Rectangle tooltipPixels)
+    {
+        Vector2 mapPixel = position.GetMapPixelPosition(location, tile);
+        return GetDistanceToRectangle(tooltipPixels, mapPixel);
+    }
+
+    private static int GetDistanceToRectangle(Rectangle rectangle, Vector2 point)
+    {
+        int x = (int)Math.Round(point.X);
+        int y = (int)Math.Round(point.Y);
+        int dx = x < rectangle.Left ? rectangle.Left - x : x > rectangle.Right ? x - rectangle.Right : 0;
+        int dy = y < rectangle.Top ? rectangle.Top - y : y > rectangle.Bottom ? y - rectangle.Bottom : 0;
+        return dx + dy;
+    }
+
+    private static int GetDoorMatchTolerance(Rectangle tooltipPixels)
+    {
+        int size = Math.Max(tooltipPixels.Width, tooltipPixels.Height);
+        return Math.Clamp(size / 3, 12, 48);
+    }
+
+    private static string StripTooltipDetails(string text)
+    {
+        if (string.IsNullOrWhiteSpace(text))
+            return "";
+
+        string firstLine = text.Split('\n', '\r')[0].Trim();
+        return firstLine.Length > 0 ? firstLine : text.Trim();
+    }
+
+    private static bool IsTextMatch(string left, string right)
+    {
+        if (string.IsNullOrWhiteSpace(left) || string.IsNullOrWhiteSpace(right))
+            return false;
+
+        return left.Contains(right, StringComparison.OrdinalIgnoreCase)
+            || right.Contains(left, StringComparison.OrdinalIgnoreCase);
     }
 
     private static bool TryGetExteriorDoorTarget(string locationName, out string exteriorLocation, out Point exteriorTile)
