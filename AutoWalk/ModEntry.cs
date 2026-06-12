@@ -96,6 +96,7 @@ internal sealed class ModEntry : Mod
         this.legRetries = 0;
         this.finalLeg = false;
         this.legWarp = null;
+        this.ResetStuckWatchdog();
         this.StartLeg();
     }
 
@@ -259,6 +260,7 @@ internal sealed class ModEntry : Mod
         this.warpPendingTicks = -1;
         this.idleTicks = 0;
         this.legRetries = 0;
+        this.ResetStuckWatchdog();
 
         this.Monitor.Log($"Routing to '{locationName}' tile {tile} from '{Game1.currentLocation?.Name}'.", LogLevel.Info);
         Game1.addHUDMessage(HUDMessage.ForCornerTextbox($"前往「{locationName}」…"));
@@ -273,6 +275,8 @@ internal sealed class ModEntry : Mod
         GameLocation? loc = Game1.currentLocation;
         if (loc == null)
             return;
+
+        this.ResetStuckWatchdog();
 
         // Final leg: we're in the destination location, walk to the chosen spot.
         if (string.Equals(loc.Name, this.destLocation, StringComparison.OrdinalIgnoreCase))
@@ -340,7 +344,7 @@ internal sealed class ModEntry : Mod
     {
         try
         {
-            return new SmoothFarmerController(Game1.player, Game1.currentLocation, tile, this.config.RunWhilePathing);
+            return new SmoothFarmerController(Game1.player, Game1.currentLocation, tile, this.config.RunWhilePathing, this.Helper.Reflection);
         }
         catch
         {
@@ -449,6 +453,7 @@ internal sealed class ModEntry : Mod
         this.warpPendingTicks = -1;
         this.idleTicks = 0;
         this.legRetries = 0;
+        this.ResetStuckWatchdog();
 
         if (Game1.player != null)
         {
@@ -459,6 +464,13 @@ internal sealed class ModEntry : Mod
 
         if (!silent && message != null)
             Game1.addHUDMessage(HUDMessage.ForCornerTextbox(message));
+    }
+
+    private void ResetStuckWatchdog()
+    {
+        this.lastWalkPosition = Game1.player?.Position ?? Vector2.Zero;
+        this.stuckTicks = 0;
+        this.npcWaitTicks = 0;
     }
 
     /// <summary>BFS over the warp graph for the first warp on the shortest (fewest-areas) route.</summary>

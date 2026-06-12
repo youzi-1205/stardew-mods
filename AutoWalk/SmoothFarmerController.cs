@@ -1,4 +1,5 @@
 using Microsoft.Xna.Framework;
+using StardewModdingAPI;
 using StardewValley;
 using StardewValley.Pathfinding;
 
@@ -25,17 +26,19 @@ namespace AutoWalk;
 internal sealed class SmoothFarmerController : PathFindController
 {
     private readonly bool run;
+    private readonly IReflectedField<bool> ignoreWarpsField;
     private int savedAnim = -1;
     private int savedIndex;
     private float savedTimer;
 
-    public SmoothFarmerController(Farmer who, GameLocation location, Point endPoint, bool run)
+    public SmoothFarmerController(Farmer who, GameLocation location, Point endPoint, bool run, IReflectionHelper reflection)
         : base(who, location, isAtEndPoint, -1, null, 60000, endPoint)
     {
         // NOTE: the default PathFindController overload caps A* at 10,000 explored nodes, which
         // genuinely fails on long routes across big maps (Forest/Beach) and produced bogus
         // "can't reach" errors. 60,000 covers any vanilla map.
         this.run = run;
+        this.ignoreWarpsField = reflection.GetField<bool>(location, "ignoreWarps");
     }
 
     protected override void moveCharacter(GameTime time)
@@ -94,9 +97,25 @@ internal sealed class SmoothFarmerController : PathFindController
         }
 
         who.canMove = true;
-        who.MovePosition(time, Game1.viewport, this.location);
+        this.MoveWithoutVanillaWarps(who, time);
 
         this.RestoreGaitPhase(who);
+    }
+
+    /// <summary>Let AutoWalk own map transitions. Farmer.MovePosition triggers vanilla warps as
+    /// soon as the bounding box touches an exit tile, which bypasses ModEntry's warp debounce.</summary>
+    private void MoveWithoutVanillaWarps(Farmer who, GameTime time)
+    {
+        bool previous = this.ignoreWarpsField.GetValue();
+        this.ignoreWarpsField.SetValue(true);
+        try
+        {
+            who.MovePosition(time, Game1.viewport, this.location);
+        }
+        finally
+        {
+            this.ignoreWarpsField.SetValue(previous);
+        }
     }
 
     /// <summary>Undo this tick's input-side Halt/StopAnimation wipe by re-installing the gait phase
