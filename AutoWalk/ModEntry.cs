@@ -29,6 +29,7 @@ internal sealed class ModEntry : Mod
     private Vector2 lastWalkPosition;
     private int stuckTicks;
     private int npcWaitTicks;
+    private Point? temporaryTargetTile;
 
     public override void Entry(IModHelper helper)
     {
@@ -93,6 +94,7 @@ internal sealed class ModEntry : Mod
         if (Game1.player.controller != null)
             Game1.player.controller = null;
         this.warpPendingTicks = -1;
+        this.temporaryTargetTile = null;
         this.idleTicks = 0;
         this.legRetries = 0;
         this.finalLeg = false;
@@ -157,11 +159,17 @@ internal sealed class ModEntry : Mod
                     // Pathfinding treats NPCs as passable (they move), so a villager standing on
                     // a one-tile road blocks us with no alternate route. Wait politely instead of
                     // burning retries into a bogus "unreachable" — they walk on within seconds.
+                    if (this.TryStartDynamicDetour(out Point detour))
+                    {
+                        this.Monitor.Log($"Blocked by a character; detouring via {detour}.", LogLevel.Info);
+                        return;
+                    }
+
                     if (IsBlockedByCharacter())
                     {
-                        if (++this.npcWaitTicks <= 900) // up to ~15s of patience
+                        if (++this.npcWaitTicks <= 300) // up to ~5s of patience
                         {
-                            this.Monitor.Log("Blocked by an NPC; waiting for them to move.", LogLevel.Trace);
+                            this.Monitor.Log("Blocked by a character with no detour; waiting for them to move.", LogLevel.Trace);
                             return;
                         }
                     }
@@ -201,6 +209,12 @@ internal sealed class ModEntry : Mod
         }
 
         // Final leg finished → arrived.
+        if (this.temporaryTargetTile.HasValue)
+        {
+            this.StartLeg();
+            return;
+        }
+
         if (this.finalLeg)
         {
             this.StopRouting("已到达目的地。", success: true);
@@ -260,6 +274,7 @@ internal sealed class ModEntry : Mod
         this.finalLeg = false;
         this.legWarp = null;
         this.warpPendingTicks = -1;
+        this.temporaryTargetTile = null;
         this.idleTicks = 0;
         this.legRetries = 0;
         this.ResetStuckWatchdog();
@@ -279,6 +294,22 @@ internal sealed class ModEntry : Mod
             return;
 
         this.ResetStuckWatchdog();
+
+        if (this.temporaryTargetTile.HasValue)
+        {
+            Point temporaryTarget = this.temporaryTargetTile.Value;
+
+            PathFindController? controller = this.BuildController(temporaryTarget, avoidDynamicBlockers: true);
+            if (controller == null)
+                return;
+
+            this.temporaryTargetTile = null;
+            if (controller.pathToEndPoint != null && controller.pathToEndPoint.Count > 0)
+            {
+                Game1.player.controller = controller;
+                return;
+            }
+        }
 
         // Final leg: we're in the destination location, walk to the chosen spot.
         if (string.Equals(loc.Name, this.destLocation, StringComparison.OrdinalIgnoreCase))
@@ -349,7 +380,7 @@ internal sealed class ModEntry : Mod
 
         foreach (Point candidate in this.GetFinalTargetCandidates(loc, desiredTile))
         {
-            PathFindController? controller = this.BuildController(candidate);
+            PathFindController? controller = this.BuildController(candidate, avoidDynamicBlockers: true);
             if (controller == null)
                 return null; // pathfinder's shared buffer is busy; try again next tick
 
@@ -380,7 +411,7 @@ internal sealed class ModEntry : Mod
         int failedAttempts = 0;
         foreach (Point candidate in this.GetWarpApproachCandidates(loc, warp))
         {
-            PathFindController? controller = this.BuildController(candidate);
+            PathFindController? controller = this.BuildController(candidate, avoidDynamicBlockers: true);
             if (controller == null)
                 return null; // pathfinder's shared buffer is busy; try again next tick
 
@@ -401,11 +432,17 @@ internal sealed class ModEntry : Mod
         return unreachableController;
     }
 
-    private PathFindController? BuildController(Point tile)
+    private PathFindController? BuildController(Point tile, bool avoidDynamicBlockers)
     {
         try
         {
-            return new SmoothFarmerController(Game1.player, Game1.currentLocation, tile, this.config.RunWhilePathing, this.Helper.Reflection);
+            return new SmoothFarmerController(
+                Game1.player,
+                Game1.currentLocation,
+                tile,
+                this.config.RunWhilePathing,
+                this.Helper.Reflection,
+                avoidDynamicBlockers ? IsDynamicallyOccupiedTile : null);
         }
         catch
         {
@@ -573,6 +610,79 @@ internal sealed class ModEntry : Mod
         return !loc.isCollidingPosition(box, Game1.viewport, true, 0, glider: false, Game1.player, pathfinding: true);
     }
 
+    private bool IsCurrentlyWalkable(GameLocation loc, Point tile)
+    {
+        if (!this.IsWalkable(loc, tile))
+            return false;
+
+        var box = new Microsoft.Xna.Framework.Rectangle(tile.X * 64 + 1, tile.Y * 64 + 1, 62, 62);
+        return !IsOccupiedByDynamicBlocker(loc, box);
+    }
+
+    private bool TryStartDynamicDetour(out Point detour)
+    {
+        detour = Point.Zero;
+
+        if (Game1.currentLocation == null || Game1.player == null)
+            return false;
+
+        GameLocation loc = Game1.currentLocation;
+        Point playerTile = Game1.player.TilePoint;
+        Point routeTarget = Game1.player.controller?.endPoint ?? (this.finalLeg ? this.destTile : this.legApproach);
+
+        foreach (Point candidate in this.GetDynamicDetourCandidates(loc, playerTile, routeTarget))
+        {
+            PathFindController? controller = this.BuildController(candidate, avoidDynamicBlockers: true);
+            if (controller == null)
+                return false;
+            if (controller.pathToEndPoint == null || controller.pathToEndPoint.Count == 0)
+                continue;
+
+            Game1.player.controller = controller;
+            this.temporaryTargetTile = candidate == routeTarget ? null : routeTarget;
+            this.ResetStuckWatchdog();
+            detour = candidate;
+            return true;
+        }
+
+        return false;
+    }
+
+    private IEnumerable<Point> GetDynamicDetourCandidates(GameLocation loc, Point playerTile, Point routeTarget)
+    {
+        var yielded = new HashSet<Point>();
+
+        foreach (Point candidate in this.FindNearbyCurrentlyWalkableTiles(loc, routeTarget, maxRadius: 8))
+        {
+            if (yielded.Add(candidate))
+                yield return candidate;
+        }
+
+        foreach (Point candidate in this.FindNearbyCurrentlyWalkableTiles(loc, playerTile, maxRadius: 4))
+        {
+            if (yielded.Add(candidate))
+                yield return candidate;
+        }
+    }
+
+    private IEnumerable<Point> FindNearbyCurrentlyWalkableTiles(GameLocation loc, Point target, int maxRadius)
+    {
+        int width = loc.map?.Layers[0]?.LayerWidth ?? 0;
+        int height = loc.map?.Layers[0]?.LayerHeight ?? 0;
+        if (width <= 0 || height <= 0)
+            yield break;
+
+        Point clamped = new(Math.Clamp(target.X, 0, width - 1), Math.Clamp(target.Y, 0, height - 1));
+        if (this.IsCurrentlyWalkable(loc, clamped))
+            yield return clamped;
+
+        foreach (Point candidate in this.FindNearbyWalkableTiles(loc, clamped, maxRadius))
+        {
+            if (this.IsCurrentlyWalkable(loc, candidate))
+                yield return candidate;
+        }
+    }
+
     private void StopRouting(string? message, bool success, bool silent = false)
     {
         this.routing = false;
@@ -580,6 +690,7 @@ internal sealed class ModEntry : Mod
         this.legWarp = null;
         this.destDisplayName = "";
         this.warpPendingTicks = -1;
+        this.temporaryTargetTile = null;
         this.idleTicks = 0;
         this.legRetries = 0;
         this.ResetStuckWatchdog();
@@ -600,6 +711,39 @@ internal sealed class ModEntry : Mod
         this.lastWalkPosition = Game1.player?.Position ?? Vector2.Zero;
         this.stuckTicks = 0;
         this.npcWaitTicks = 0;
+    }
+
+    private static bool IsDynamicallyOccupiedTile(GameLocation loc, Point tile)
+    {
+        var box = new Microsoft.Xna.Framework.Rectangle(tile.X * 64 + 1, tile.Y * 64 + 1, 62, 62);
+        return IsOccupiedByDynamicBlocker(loc, box);
+    }
+
+    private static bool IsOccupiedByDynamicBlocker(GameLocation loc, Microsoft.Xna.Framework.Rectangle box)
+    {
+        foreach (NPC npc in loc.characters)
+        {
+            if (npc.farmerPassesThrough)
+                continue;
+            if (npc.GetBoundingBox().Intersects(box))
+                return true;
+        }
+
+        foreach (FarmAnimal animal in loc.animals.Values)
+        {
+            if (animal.GetBoundingBox().Intersects(box))
+                return true;
+        }
+
+        foreach (Farmer farmer in loc.farmers)
+        {
+            if (farmer.UniqueMultiplayerID == Game1.player.UniqueMultiplayerID)
+                continue;
+            if (farmer.GetBoundingBox().Intersects(box))
+                return true;
+        }
+
+        return false;
     }
 
     /// <summary>BFS over the warp graph for the first warp on the shortest (fewest-areas) route.</summary>
@@ -1120,11 +1264,6 @@ internal sealed class ModEntry : Mod
         Microsoft.Xna.Framework.Rectangle reach = Game1.player.GetBoundingBox();
         reach.Inflate(56, 56);
 
-        foreach (NPC npc in location.characters)
-        {
-            if (npc.GetBoundingBox().Intersects(reach))
-                return true;
-        }
-        return false;
+        return IsOccupiedByDynamicBlocker(location, reach);
     }
 }

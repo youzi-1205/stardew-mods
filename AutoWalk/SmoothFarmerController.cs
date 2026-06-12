@@ -27,18 +27,93 @@ internal sealed class SmoothFarmerController : PathFindController
 {
     private readonly bool run;
     private readonly IReflectedField<bool> ignoreWarpsField;
+    private readonly Func<GameLocation, Point, bool>? isTemporarilyBlocked;
     private int savedAnim = -1;
     private int savedIndex;
     private float savedTimer;
 
-    public SmoothFarmerController(Farmer who, GameLocation location, Point endPoint, bool run, IReflectionHelper reflection)
-        : base(who, location, isAtEndPoint, -1, null, 60000, endPoint)
+    public SmoothFarmerController(Farmer who, GameLocation location, Point endPoint, bool run, IReflectionHelper reflection, Func<GameLocation, Point, bool>? isTemporarilyBlocked = null)
+        : base(who, location, isAtEndPoint, -1, null, 60000, Point.Zero)
     {
         // NOTE: the default PathFindController overload caps A* at 10,000 explored nodes, which
         // genuinely fails on long routes across big maps (Forest/Beach) and produced bogus
         // "can't reach" errors. 60,000 covers any vanilla map.
         this.run = run;
+        this.isTemporarilyBlocked = isTemporarilyBlocked;
         this.ignoreWarpsField = reflection.GetField<bool>(location, "ignoreWarps");
+        this.endPoint = endPoint;
+        this.pathToEndPoint = this.FindPath(who.TilePoint, endPoint);
+    }
+
+    private Stack<Point>? FindPath(Point startPoint, Point endPoint)
+    {
+        return this.isTemporarilyBlocked == null
+            ? findPath(startPoint, endPoint, isAtEndPoint, this.location, Game1.player, 60000)
+            : this.FindPathAvoidingTemporaryBlocks(startPoint, endPoint, 60000);
+    }
+
+    private Stack<Point>? FindPathAvoidingTemporaryBlocks(Point startPoint, Point endPoint, int limit)
+    {
+        var openList = new System.Collections.Generic.PriorityQueue<PathNode, int>();
+        var closedList = new HashSet<int>();
+
+        openList.Enqueue(new PathNode(startPoint.X, startPoint.Y, 0, null), Math.Abs(endPoint.X - startPoint.X) + Math.Abs(endPoint.Y - startPoint.Y));
+        int width = this.location.map.Layers[0].LayerWidth;
+        int height = this.location.map.Layers[0].LayerHeight;
+        int searched = 0;
+
+        while (openList.TryDequeue(out PathNode? node, out _))
+        {
+            if (node.x == endPoint.X && node.y == endPoint.Y)
+                return reconstructPath(node);
+
+            closedList.Add(node.id);
+            int nextCost = node.g + 1;
+
+            for (int i = 0; i < 4; i++)
+            {
+                int x = node.x + Directions[i, 0];
+                int y = node.y + Directions[i, 1];
+                int hash = PathNode.ComputeHash(x, y);
+                if (closedList.Contains(hash))
+                    continue;
+
+                bool isEnd = x == endPoint.X && y == endPoint.Y;
+                if (!isEnd && (x < 0 || y < 0 || x >= width || y >= height))
+                {
+                    closedList.Add(hash);
+                    continue;
+                }
+
+                Point tile = new(x, y);
+                if (tile != startPoint && this.isTemporarilyBlocked!(this.location, tile))
+                {
+                    closedList.Add(hash);
+                    continue;
+                }
+
+                var nextNode = new PathNode(x, y, node)
+                {
+                    g = (byte)nextCost
+                };
+
+                var box = new Rectangle(nextNode.x * 64 + 1, nextNode.y * 64 + 1, 62, 62);
+                if (this.location.isCollidingPosition(box, Game1.viewport, true, 0, glider: false, Game1.player, pathfinding: true))
+                {
+                    closedList.Add(hash);
+                    continue;
+                }
+
+                int priority = nextCost + Math.Abs(endPoint.X - x) + Math.Abs(endPoint.Y - y);
+                closedList.Add(hash);
+                openList.Enqueue(nextNode, priority);
+            }
+
+            if (++searched >= limit)
+                return null;
+        }
+
+        return null;
     }
 
     protected override void moveCharacter(GameTime time)
