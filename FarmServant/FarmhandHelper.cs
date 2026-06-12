@@ -7,6 +7,7 @@ using StardewValley.Buildings;
 using StardewValley.Characters;
 using StardewValley.Extensions;
 using StardewValley.GameData.Characters;
+using StardewValley.GameData.Crops;
 using StardewValley.GameData.FarmAnimals;
 using StardewValley.GameData.Machines;
 using StardewValley.Pathfinding;
@@ -2177,7 +2178,9 @@ internal sealed class FarmhandHelper
             return;
         }
 
-        if (task.Kind is TaskKind.Harvest or TaskKind.ClearWeeds or TaskKind.CutGrass)
+        // Pick the animation family by the TOOL actually in hand (a twig task carries the axe, so
+        // it must swing like a tool, not like the scythe).
+        if (tool is MeleeWeapon)
         {
             int frameIndex = WorkFrameIndex(progress, 6);
             int animation = GetWeaponAnimation(farmer.FacingDirection);
@@ -2192,16 +2195,34 @@ internal sealed class FarmhandHelper
         tool.Update(farmer.FacingDirection, toolFrame, farmer);
     }
 
+    /// <summary>The tool shown in his hands — resolved from the ACTUAL target so it always matches
+    /// what the work logic uses: twigs take the axe (not the scythe), hand-picked crops show no
+    /// tool (players harvest most crops bare-handed), scythe only for scythe-harvest crops.</summary>
     private Tool? GetVisualTool(FarmTask task)
     {
+        Farm farm = Game1.getFarm();
+        var tile = new Vector2(task.Tile.X, task.Tile.Y);
+
         return task.Kind switch
         {
             TaskKind.Water => this.GetHelperWateringCan(),
             TaskKind.ChopTree => this.GetHelperAxe(),
             TaskKind.BreakStone => this.GetHelperPickaxe(),
-            TaskKind.Harvest or TaskKind.ClearWeeds or TaskKind.CutGrass => this.GetHelperScythe(),
+            TaskKind.CutGrass => this.GetHelperScythe(),
+            TaskKind.ClearWeeds => farm.objects.TryGetValue(tile, out StardewValley.Object? obj) && IsTwig(obj)
+                ? this.GetHelperAxe()
+                : this.GetHelperScythe(),
+            TaskKind.Harvest => this.IsScytheHarvest(farm, tile) ? this.GetHelperScythe() : null,
             _ => null,
         };
+    }
+
+    private bool IsScytheHarvest(Farm farm, Vector2 tile)
+    {
+        return farm.terrainFeatures.TryGetValue(tile, out TerrainFeature? feature)
+            && feature is HoeDirt dirt
+            && dirt.crop != null
+            && dirt.crop.GetHarvestMethod() == HarvestMethod.Scythe;
     }
 
     private WateringCan GetHelperWateringCan()
