@@ -132,7 +132,7 @@ internal sealed class MachineRefill
         // references between the temporary inventory and the source chests.
         List<Chest> chests = GetSourceChests(location);
         var combined = new Inventory();
-        var sourceStacks = new List<SourceStack>();
+        var aggregateStacks = new List<AggregateStack>();
         foreach (Chest chest in chests)
         {
             foreach (Item? item in chest.GetItemsForPlayer())
@@ -140,29 +140,24 @@ internal sealed class MachineRefill
                 if (item == null || item.Stack <= 0)
                     continue;
 
-                Item copy = item.getOne();
-                copy.Stack = item.Stack;
-                combined.Add(copy);
-                sourceStacks.Add(new SourceStack(chest, item, item.QualifiedItemId, item.Stack, copy));
+                AddToAggregatedInventory(combined, aggregateStacks, chest, item);
             }
         }
 
         if (machine.AttemptAutoLoad(combined, Game1.player))
         {
-            foreach (SourceStack sourceStack in sourceStacks)
+            foreach (AggregateStack aggregateStack in aggregateStacks)
             {
-                int remaining = combined.Contains(sourceStack.Copy)
-                    ? Math.Max(0, sourceStack.Copy.Stack)
+                int remaining = combined.Contains(aggregateStack.Copy)
+                    ? Math.Max(0, aggregateStack.Copy.Stack)
                     : 0;
-                int consumed = sourceStack.InitialStack - remaining;
+                int consumed = aggregateStack.InitialStack - remaining;
                 if (consumed <= 0)
                     continue;
 
-                int removed = sourceStack.Chest.GetItemsForPlayer().Reduce(sourceStack.Source, consumed, reduceRemainderFromInventory: false);
+                int removed = RemoveFromSourceStacks(aggregateStack, consumed);
                 if (removed < consumed)
-                    removed += sourceStack.Chest.GetItemsForPlayer().ReduceId(sourceStack.ItemId, consumed - removed);
-                if (removed < consumed)
-                    this.monitor.Log($"Machine refill consumed {consumed} x {sourceStack.ItemId}, but only {removed} could be removed from the source chest.", LogLevel.Warn);
+                    this.monitor.Log($"Machine refill consumed {consumed} x {aggregateStack.Copy.QualifiedItemId}, but only {removed} could be removed from the source chests.", LogLevel.Warn);
             }
 
             Game1.addHUDMessage(HUDMessage.ForCornerTextbox($"已为「{machine.DisplayName}」补货并启动。"));
@@ -173,7 +168,69 @@ internal sealed class MachineRefill
         Game1.addHUDMessage(HUDMessage.ForCornerTextbox("箱子里没有这台机器需要的材料。"));
     }
 
-    private sealed record SourceStack(Chest Chest, Item Source, string ItemId, int InitialStack, Item Copy);
+    private static void AddToAggregatedInventory(Inventory combined, List<AggregateStack> aggregateStacks, Chest chest, Item source)
+    {
+        int remaining = source.Stack;
+        while (remaining > 0)
+        {
+            AggregateStack? aggregateStack = aggregateStacks.FirstOrDefault(group =>
+                group.Copy.canStackWith(source) && group.Copy.Stack < group.Copy.maximumStackSize());
+
+            if (aggregateStack == null)
+            {
+                Item copy = source.getOne();
+                aggregateStack = new AggregateStack(copy);
+                aggregateStacks.Add(aggregateStack);
+                combined.Add(copy);
+            }
+
+            int space = Math.Max(1, aggregateStack.Copy.maximumStackSize() - aggregateStack.Copy.Stack);
+            int added = Math.Min(remaining, space);
+            aggregateStack.Copy.Stack = aggregateStack.InitialStack == 0
+                ? added
+                : aggregateStack.Copy.Stack + added;
+            aggregateStack.InitialStack += added;
+            aggregateStack.Sources.Add(new SourceStack(chest, source, source.QualifiedItemId, added));
+            remaining -= added;
+        }
+    }
+
+    private static int RemoveFromSourceStacks(AggregateStack aggregateStack, int count)
+    {
+        int remaining = count;
+        int removedTotal = 0;
+
+        foreach (SourceStack sourceStack in aggregateStack.Sources)
+        {
+            if (remaining <= 0)
+                break;
+
+            int take = Math.Min(remaining, sourceStack.Contributed);
+            IInventory items = sourceStack.Chest.GetItemsForPlayer();
+            int removed = items.Reduce(sourceStack.Source, take, reduceRemainderFromInventory: false);
+            if (removed < take)
+                removed += items.ReduceId(sourceStack.ItemId, take - removed);
+
+            removedTotal += removed;
+            remaining -= removed;
+        }
+
+        return removedTotal;
+    }
+
+    private sealed class AggregateStack
+    {
+        public AggregateStack(Item copy)
+        {
+            this.Copy = copy;
+        }
+
+        public Item Copy { get; }
+        public int InitialStack { get; set; }
+        public List<SourceStack> Sources { get; } = new();
+    }
+
+    private sealed record SourceStack(Chest Chest, Item Source, string ItemId, int Contributed);
 
     private static List<Chest> GetSourceChests(GameLocation location)
     {
