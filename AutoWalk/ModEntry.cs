@@ -168,10 +168,11 @@ internal sealed class ModEntry : Mod
                     Game1.player.controller = null;
                     if (++this.legRetries > 8)
                     {
+                        this.Monitor.Log($"Giving up: stalled at {Game1.player.TilePoint}; {DescribeSurroundings()}", LogLevel.Info);
                         this.StopRouting("路被挡住了，无法到达目的地。", success: false);
                         return;
                     }
-                    this.Monitor.Log("Walk stalled; re-pathing.", LogLevel.Trace);
+                    this.Monitor.Log($"Walk stalled at {Game1.player.TilePoint} facing={Game1.player.FacingDirection} approach={this.legApproach}; {DescribeSurroundings()}", LogLevel.Info);
                     this.StartLeg();
                     return;
                 }
@@ -221,13 +222,13 @@ internal sealed class ModEntry : Mod
             return;
         this.idleTicks = 0;
 
-        // Still close to the exit? Warping from a couple tiles out beats stalling at the map
-        // edge — but keep it tight (3 tiles) so it never looks like teleporting through scenery.
+        // Still close to the exit? Warping from a few tiles out beats stalling at the map edge.
+        // (6 tiles: tightening this to 3 regressed the bus-stop route into hard failures.)
         if (this.legWarp != null)
         {
             Point tile = Game1.player.TilePoint;
             int distance = Math.Abs(tile.X - this.legApproach.X) + Math.Abs(tile.Y - this.legApproach.Y);
-            if (distance <= 3)
+            if (distance <= 6)
             {
                 this.Monitor.Log($"Stopped {distance} tiles short of the exit approach; warping anyway.", LogLevel.Info);
                 this.DoWarp(this.legWarp);
@@ -775,6 +776,38 @@ internal sealed class ModEntry : Mod
     {
         return button is SButton.W or SButton.A or SButton.S or SButton.D
             or SButton.Up or SButton.Down or SButton.Left or SButton.Right;
+    }
+
+    /// <summary>Diagnostic snapshot of the tile the player is pushing into: what's on it, and
+    /// whether the movement vs pathfinding collision checks disagree (the smoking gun for any
+    /// "A* says walkable, body says blocked" stall).</summary>
+    private static string DescribeSurroundings()
+    {
+        Farmer player = Game1.player;
+        GameLocation? location = Game1.currentLocation;
+        if (location == null)
+            return "no location";
+
+        Rectangle next = player.nextPosition(player.FacingDirection);
+        var tile = new Vector2(next.Center.X / 64, next.Center.Y / 64);
+
+        string objName = location.objects.TryGetValue(tile, out StardewValley.Object? obj) ? obj.Name : "-";
+        string featureName = location.terrainFeatures.TryGetValue(tile, out var feature) ? feature.GetType().Name : "-";
+
+        string npcName = "-";
+        foreach (NPC npc in location.characters)
+        {
+            if (npc.GetBoundingBox().Intersects(next))
+            {
+                npcName = $"{npc.Name}(passThrough={npc.farmerPassesThrough})";
+                break;
+            }
+        }
+
+        bool collideMove = location.isCollidingPosition(next, Game1.viewport, true, 0, glider: false, player);
+        bool collidePath = location.isCollidingPosition(next, Game1.viewport, true, 0, glider: false, player, pathfinding: true);
+
+        return $"ahead tile={tile} obj={objName} feature={featureName} npc={npcName} collide(move)={collideMove} collide(path)={collidePath}";
     }
 
     /// <summary>Is a character (villager/animal/horse) standing right next to the player —
