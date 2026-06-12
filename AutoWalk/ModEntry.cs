@@ -27,6 +27,7 @@ internal sealed class ModEntry : Mod
     private int diagTicks;
     private Vector2 lastWalkPosition;
     private int stuckTicks;
+    private int npcWaitTicks;
 
     public override void Entry(IModHelper helper)
     {
@@ -150,6 +151,20 @@ internal sealed class ModEntry : Mod
                 if (++this.stuckTicks >= 45)
                 {
                     this.stuckTicks = 0;
+
+                    // Pathfinding treats NPCs as passable (they move), so a villager standing on
+                    // a one-tile road blocks us with no alternate route. Wait politely instead of
+                    // burning retries into a bogus "unreachable" — they walk on within seconds.
+                    if (IsBlockedByCharacter())
+                    {
+                        if (++this.npcWaitTicks <= 900) // up to ~15s of patience
+                        {
+                            this.Monitor.Log("Blocked by an NPC; waiting for them to move.", LogLevel.Trace);
+                            return;
+                        }
+                    }
+                    this.npcWaitTicks = 0;
+
                     Game1.player.controller = null;
                     if (++this.legRetries > 8)
                     {
@@ -166,6 +181,7 @@ internal sealed class ModEntry : Mod
                 this.stuckTicks = 0;
                 this.lastWalkPosition = position;
                 this.legRetries = 0; // making progress again
+                this.npcWaitTicks = 0;
             }
 
             // Snapshot the gait phase after the game animated this tick, so the controller can
@@ -638,6 +654,10 @@ internal sealed class ModEntry : Mod
             tile = exteriorTile;
         }
 
+        // Some world-map position data carries tile areas that don't match the real map (e.g. the
+        // spa hotspot resolved to Railroad y=197 on a ~60-tile-tall map) — clamp to actual bounds.
+        tile = ClampToLocationBounds(locationName, tile);
+
         this.Monitor.Log($"Map hotspot '{tooltip.NamespacedId}' ('{tooltip.Text}') -> {locationName} tile {tile}.", LogLevel.Info);
         return true;
     }
@@ -713,6 +733,17 @@ internal sealed class ModEntry : Mod
         return !string.IsNullOrWhiteSpace(text) && text != "???";
     }
 
+    private static Point ClampToLocationBounds(string locationName, Point tile)
+    {
+        GameLocation? location = Game1.getLocationFromName(locationName);
+        int width = location?.map?.Layers[0]?.LayerWidth ?? 0;
+        int height = location?.map?.Layers[0]?.LayerHeight ?? 0;
+        if (width <= 0 || height <= 0)
+            return tile;
+
+        return new Point(Math.Clamp(tile.X, 0, width - 1), Math.Clamp(tile.Y, 0, height - 1));
+    }
+
     private static bool TryGetPositionLocationName(MapAreaPosition position, out string name)
     {
         name = position.Data.LocationName;
@@ -744,5 +775,24 @@ internal sealed class ModEntry : Mod
     {
         return button is SButton.W or SButton.A or SButton.S or SButton.D
             or SButton.Up or SButton.Down or SButton.Left or SButton.Right;
+    }
+
+    /// <summary>Is a character (villager/animal/horse) standing right next to the player —
+    /// i.e. the likely reason we can't move?</summary>
+    private static bool IsBlockedByCharacter()
+    {
+        GameLocation? location = Game1.currentLocation;
+        if (location == null)
+            return false;
+
+        Microsoft.Xna.Framework.Rectangle reach = Game1.player.GetBoundingBox();
+        reach.Inflate(56, 56);
+
+        foreach (NPC npc in location.characters)
+        {
+            if (npc.GetBoundingBox().Intersects(reach))
+                return true;
+        }
+        return false;
     }
 }
