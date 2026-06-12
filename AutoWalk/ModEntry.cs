@@ -345,6 +345,7 @@ internal sealed class ModEntry : Mod
     {
         target = this.FindReachableTileNear(loc, desiredTile);
         PathFindController? unreachableController = null;
+        int failedAttempts = 0;
 
         foreach (Point candidate in this.GetFinalTargetCandidates(loc, desiredTile))
         {
@@ -359,6 +360,13 @@ internal sealed class ModEntry : Mod
             }
 
             unreachableController ??= controller;
+
+            // Each failed attempt is a full A* sweep of the player's whole reachable area (the
+            // goal sits in a walled-off pocket, e.g. the quarry before the bridge is repaired).
+            // A few nearby alternates cover the legit "door blocked by decoration" cases; trying
+            // every ring tile up to radius 20 would freeze the game for seconds before failing.
+            if (++failedAttempts >= 12)
+                break;
         }
 
         return unreachableController;
@@ -369,6 +377,7 @@ internal sealed class ModEntry : Mod
         approach = this.FindWarpApproach(loc, warp);
         PathFindController? unreachableController = null;
 
+        int failedAttempts = 0;
         foreach (Point candidate in this.GetWarpApproachCandidates(loc, warp))
         {
             PathFindController? controller = this.BuildController(candidate);
@@ -382,6 +391,11 @@ internal sealed class ModEntry : Mod
             }
 
             unreachableController ??= controller;
+
+            // Same guard as the final leg: a failed A* explores the entire reachable area, so an
+            // unreachable exit must not burn through ~300 ring candidates in a single frozen tick.
+            if (++failedAttempts >= 8)
+                break;
         }
 
         return unreachableController;
