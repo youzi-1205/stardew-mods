@@ -44,8 +44,13 @@ internal sealed class FarmhandHelper
 {
     private enum TaskKind { Water, Harvest, Fertilize, Plant, ChopTree, BreakStone, ClearWeeds, TendAnimals, Deliver, CollectMachine, CollectBuilding, CutGrass }
 
-    private sealed record FarmTask(TaskKind Kind, Point Tile, string? ItemId = null, string? LocationName = null);
+    private sealed record FarmTask(TaskKind Kind, Point Tile, string? ItemId = null, string? LocationName = null, string? FertilizerId = null);
     private sealed record WorkDebrisSite(Point Tile, HashSet<Debris> ExistingDebris);
+    private sealed record FertilizerOption(string Id, FertilizerKind Kind, float Strength);
+    private sealed record FertilizerCandidate(Point Tile, string SeedId, CropData CropData, Crop? Crop);
+    private sealed record FertilizerScore(Point Tile, string FertilizerId, float Score);
+
+    private enum FertilizerKind { Quality, Speed, Retaining }
 
     private const string NpcName = "FarmSuiteHelper";
     private const string NpcTextureName = "FarmSuiteHelper";
@@ -56,7 +61,18 @@ internal sealed class FarmhandHelper
     private const string SourceSpriteAsset = "Characters/Lewis";
     private const string SourcePortraitAsset = "Portraits/Lewis";
     private const long VisualFarmerId = -701_202_501L;
-    private static readonly string[] FertilizerIds = { "369", "368" }; // quality first
+    private static readonly FertilizerOption[] Fertilizers =
+    {
+        new("919", FertilizerKind.Quality, 0.20f),    // Deluxe Fertilizer
+        new("369", FertilizerKind.Quality, 0.12f),    // Quality Fertilizer
+        new("368", FertilizerKind.Quality, 0.06f),    // Basic Fertilizer
+        new("918", FertilizerKind.Speed, 0.33f),      // Hyper Speed-Gro
+        new("466", FertilizerKind.Speed, 0.25f),      // Deluxe Speed-Gro
+        new("465", FertilizerKind.Speed, 0.10f),      // Speed-Gro
+        new("920", FertilizerKind.Retaining, 1.00f),  // Deluxe Retaining Soil
+        new("371", FertilizerKind.Retaining, 0.66f),  // Quality Retaining Soil
+        new("370", FertilizerKind.Retaining, 0.33f),  // Basic Retaining Soil
+    };
     private static readonly Point[] HomeCandidates =
     {
         new(61, 17),
@@ -754,11 +770,11 @@ internal sealed class FarmhandHelper
     {
         bool raining = farm.IsRainingHere();
         List<Chest> chests = GetFarmChests(farm);
+        var plannedTasks = new List<FarmTask>();
+        var fertilizerCandidates = new List<FertilizerCandidate>();
 
         // Resolve materials once and queue only as many tasks as the chests can supply, so he
         // doesn't spend the afternoon pantomiming at tiles he has no seeds for.
-        string? fertilizer = this.config().HelperFertilizes ? FindAvailable(chests, FertilizerIds) : null;
-        int fertilizerBudget = fertilizer != null ? chests.Sum(c => c.Items.CountId(fertilizer)) : 0;
         string? seed = this.config().HelperReplants ? FindBestSeed(chests, farm) : null;
         int seedBudget = seed != null ? chests.Sum(c => c.Items.CountId(seed)) : 0;
 
@@ -772,28 +788,50 @@ internal sealed class FarmhandHelper
 
             if (dirt.readyForHarvest())
             {
-                target.Add(new FarmTask(TaskKind.Harvest, tile));
+                plannedTasks.Add(new FarmTask(TaskKind.Harvest, tile));
                 continue;
             }
 
             if (dirt.crop != null && !dirt.crop.dead.Value)
             {
                 if (!raining && dirt.state.Value != HoeDirt.watered && dirt.needsWatering())
-                    target.Add(new FarmTask(TaskKind.Water, tile));
+                    plannedTasks.Add(new FarmTask(TaskKind.Water, tile));
 
-                if (fertilizer != null && fertilizerBudget > 0
+                if (this.config().HelperFertilizes
                     && string.IsNullOrEmpty(dirt.fertilizer.Value)
-                    && dirt.crop.currentPhase.Value == 0)
+                    && dirt.crop.currentPhase.Value == 0
+                    && !string.IsNullOrWhiteSpace(dirt.crop.netSeedIndex.Value)
+                    && Crop.TryGetData(dirt.crop.netSeedIndex.Value, out CropData cropData))
                 {
-                    target.Add(new FarmTask(TaskKind.Fertilize, tile, fertilizer));
-                    fertilizerBudget--;
+                    fertilizerCandidates.Add(new FertilizerCandidate(tile, dirt.crop.netSeedIndex.Value, cropData, dirt.crop));
                 }
             }
             else if (dirt.crop == null && seed != null && seedBudget > 0)
             {
-                target.Add(new FarmTask(TaskKind.Plant, tile, seed));
+                plannedTasks.Add(new FarmTask(TaskKind.Plant, tile, seed));
+                if (this.config().HelperFertilizes && Crop.TryGetData(seed, out CropData seedData))
+                    fertilizerCandidates.Add(new FertilizerCandidate(tile, seed, seedData, Crop: null));
                 seedBudget--;
             }
+        }
+
+        Dictionary<Point, string> fertilizerAssignments = this.AssignSmartFertilizers(fertilizerCandidates, chests, farm);
+        foreach (FarmTask task in plannedTasks)
+        {
+            if (task.Kind == TaskKind.Plant
+                && fertilizerAssignments.TryGetValue(task.Tile, out string? plantFertilizer)
+                && plantFertilizer != null)
+                target.Add(task with { FertilizerId = plantFertilizer });
+            else
+                target.Add(task);
+        }
+
+        foreach (FertilizerCandidate candidate in fertilizerCandidates)
+        {
+            if (candidate.Crop != null
+                && fertilizerAssignments.TryGetValue(candidate.Tile, out string? fertilizer)
+                && fertilizer != null)
+                target.Add(new FarmTask(TaskKind.Fertilize, candidate.Tile, fertilizer));
         }
     }
 
@@ -957,17 +995,192 @@ internal sealed class FarmhandHelper
         return chests;
     }
 
-    private static string? FindAvailable(List<Chest> chests, IEnumerable<string> itemIds)
+    private Dictionary<Point, string> AssignSmartFertilizers(List<FertilizerCandidate> candidates, List<Chest> chests, Farm farm)
     {
-        foreach (string id in itemIds)
+        var assignments = new Dictionary<Point, string>();
+        if (candidates.Count == 0 || chests.Count == 0)
+            return assignments;
+
+        Dictionary<string, int> stock = GetFertilizerStock(chests);
+        if (stock.Count == 0)
+            return assignments;
+
+        List<FertilizerScore> scores = new();
+        foreach (FertilizerCandidate candidate in candidates)
         {
-            foreach (Chest chest in chests)
+            foreach (FertilizerOption fertilizer in Fertilizers)
             {
-                if (chest.Items.CountId(id) > 0)
-                    return id;
+                if (!stock.ContainsKey(fertilizer.Id))
+                    continue;
+
+                float score = this.ScoreFertilizer(candidate, fertilizer, farm);
+                if (score > 0.1f)
+                    scores.Add(new FertilizerScore(candidate.Tile, fertilizer.Id, score));
             }
         }
-        return null;
+
+        foreach (FertilizerScore score in scores.OrderByDescending(score => score.Score))
+        {
+            if (assignments.ContainsKey(score.Tile))
+                continue;
+            if (!stock.TryGetValue(score.FertilizerId, out int count) || count <= 0)
+                continue;
+
+            assignments[score.Tile] = score.FertilizerId;
+            stock[score.FertilizerId] = count - 1;
+        }
+
+        return assignments;
+    }
+
+    private static Dictionary<string, int> GetFertilizerStock(List<Chest> chests)
+    {
+        var stock = new Dictionary<string, int>();
+        foreach (FertilizerOption fertilizer in Fertilizers)
+        {
+            int count = chests.Sum(chest => chest.Items.CountId(fertilizer.Id));
+            if (count > 0)
+                stock[fertilizer.Id] = count;
+        }
+
+        return stock;
+    }
+
+    private float ScoreFertilizer(FertilizerCandidate candidate, FertilizerOption fertilizer, Farm farm)
+    {
+        float harvestValue = EstimateHarvestValue(candidate.CropData);
+        if (harvestValue <= 0f)
+            return 0f;
+
+        int growingDaysLeft = GetRemainingAllowedGrowingDays(candidate.CropData);
+        if (growingDaysLeft <= 0)
+            return 0f;
+
+        int daysToFirstHarvest = candidate.Crop != null
+            ? EstimateDaysToFirstHarvest(candidate.Crop)
+            : EstimateDaysToFirstHarvest(candidate.CropData);
+        int normalHarvests = EstimateHarvestCount(daysToFirstHarvest, candidate.CropData.RegrowDays, growingDaysLeft);
+        int fertilizerCost = GetItemPrice(fertilizer.Id);
+
+        return fertilizer.Kind switch
+        {
+            FertilizerKind.Quality => ScoreQualityFertilizer(harvestValue, normalHarvests, fertilizer.Strength, fertilizerCost),
+            FertilizerKind.Speed => ScoreSpeedFertilizer(candidate.CropData, harvestValue, daysToFirstHarvest, growingDaysLeft, fertilizer.Strength, fertilizerCost),
+            FertilizerKind.Retaining => ScoreRetainingFertilizer(candidate.CropData, normalHarvests, daysToFirstHarvest, growingDaysLeft, fertilizer.Strength, fertilizerCost),
+            _ => 0f,
+        };
+    }
+
+    private static float ScoreQualityFertilizer(float harvestValue, int harvests, float qualityBoost, int fertilizerCost)
+    {
+        if (harvests <= 0)
+            return 0f;
+
+        // Expected value uplift from better quality. The exact vanilla curve also depends on
+        // Farming level, so this deliberately stays conservative and spends deluxe fertilizer
+        // on crops where even a modest quality bump is valuable.
+        return harvestValue * harvests * qualityBoost - fertilizerCost;
+    }
+
+    private static float ScoreSpeedFertilizer(CropData cropData, float harvestValue, int daysToFirstHarvest, int growingDaysLeft, float speedBoost, int fertilizerCost)
+    {
+        int spedDays = Math.Max(1, (int)Math.Ceiling(daysToFirstHarvest * (1f - speedBoost)));
+        int normalHarvests = EstimateHarvestCount(daysToFirstHarvest, cropData.RegrowDays, growingDaysLeft);
+        int spedHarvests = EstimateHarvestCount(spedDays, cropData.RegrowDays, growingDaysLeft);
+        int extraHarvests = spedHarvests - normalHarvests;
+        if (extraHarvests <= 0)
+            return 0f;
+
+        return harvestValue * extraHarvests - fertilizerCost;
+    }
+
+    private static float ScoreRetainingFertilizer(CropData cropData, int harvests, int daysToFirstHarvest, int growingDaysLeft, float retainChance, int fertilizerCost)
+    {
+        if (!cropData.NeedsWatering || cropData.IsPaddyCrop || harvests <= 0)
+            return 0f;
+
+        int relevantDays = Math.Min(growingDaysLeft, Math.Max(daysToFirstHarvest, harvests * Math.Max(1, cropData.RegrowDays)));
+        float savedWorkValue = relevantDays * retainChance * 2f;
+        return savedWorkValue - fertilizerCost;
+    }
+
+    private static float EstimateHarvestValue(CropData cropData)
+    {
+        if (string.IsNullOrWhiteSpace(cropData.HarvestItemId))
+            return 0f;
+        if (ItemRegistry.Create(cropData.HarvestItemId, allowNull: true) is not StardewValley.Object produce)
+            return 0f;
+
+        float averageStack = (cropData.HarvestMinStack + cropData.HarvestMaxStack) / 2f;
+        averageStack += Math.Max(0f, cropData.HarvestMaxIncreasePerFarmingLevel) * Game1.player.FarmingLevel / 2f;
+        if (cropData.ExtraHarvestChance > 0 && cropData.ExtraHarvestChance < 1)
+            averageStack += (float)(cropData.ExtraHarvestChance / (1.0 - cropData.ExtraHarvestChance));
+
+        return produce.Price * Math.Max(1f, averageStack);
+    }
+
+    private static int EstimateDaysToFirstHarvest(CropData cropData)
+    {
+        return Math.Max(1, cropData.DaysInPhase.Sum());
+    }
+
+    private static int EstimateDaysToFirstHarvest(Crop crop)
+    {
+        // The last phaseDays entry is the 99999 "fully grown" sentinel (Crop.finalPhaseLength);
+        // vanilla skips it when totalling growth days (HoeDirt.applySpeedIncreases) and so must we,
+        // or every sprouted crop scores as "100k days to harvest" and never gets fertilizer.
+        int days = 0;
+        int phase = Math.Clamp(crop.currentPhase.Value, 0, Math.Max(0, crop.phaseDays.Count - 1));
+        for (int i = phase; i < crop.phaseDays.Count - 1; i++)
+            days += crop.phaseDays[i];
+
+        days -= Math.Max(0, crop.dayOfCurrentPhase.Value);
+        return Math.Max(1, days);
+    }
+
+    private static int EstimateHarvestCount(int daysToFirstHarvest, int regrowDays, int growingDaysLeft)
+    {
+        if (daysToFirstHarvest > growingDaysLeft)
+            return 0;
+        if (regrowDays <= 0)
+            return 1;
+
+        return 1 + (growingDaysLeft - daysToFirstHarvest) / regrowDays;
+    }
+
+    private static int GetRemainingAllowedGrowingDays(CropData cropData)
+    {
+        Season season = Game1.season;
+        if (!cropData.Seasons.Contains(season))
+            return 0;
+
+        int days = 28 - Game1.dayOfMonth;
+        Season next = NextSeason(season);
+        for (int i = 0; i < 3 && cropData.Seasons.Contains(next); i++)
+        {
+            days += 28;
+            next = NextSeason(next);
+        }
+
+        return Math.Max(0, days);
+    }
+
+    private static Season NextSeason(Season season)
+    {
+        return season switch
+        {
+            Season.Spring => Season.Summer,
+            Season.Summer => Season.Fall,
+            Season.Fall => Season.Winter,
+            _ => Season.Spring,
+        };
+    }
+
+    private static int GetItemPrice(string itemId)
+    {
+        return ItemRegistry.Create(itemId, allowNull: true) is StardewValley.Object item
+            ? Math.Max(0, item.Price)
+            : 0;
     }
 
     /// <summary>Pick the in-season seed the chests hold the most of.</summary>
@@ -1197,7 +1410,7 @@ internal sealed class FarmhandHelper
             {
                 TaskKind.Water => dirt.crop != null && !dirt.crop.dead.Value && dirt.state.Value != HoeDirt.watered && dirt.needsWatering(),
                 TaskKind.Harvest => dirt.readyForHarvest(),
-                TaskKind.Fertilize => dirt.crop != null && string.IsNullOrEmpty(dirt.fertilizer.Value),
+                TaskKind.Fertilize => dirt.crop != null && string.IsNullOrEmpty(dirt.fertilizer.Value) && dirt.crop.currentPhase.Value == 0,
                 TaskKind.Plant => dirt.crop == null,
                 _ => false,
             };
@@ -1318,6 +1531,14 @@ internal sealed class FarmhandHelper
                     return false;
                 if (!chests.Any(c => c.Items.CountId(seed) > 0))
                     return false;
+
+                if (task.FertilizerId != null
+                    && string.IsNullOrEmpty(dirt.fertilizer.Value)
+                    && chests.Any(c => c.Items.CountId(task.FertilizerId) > 0)
+                    && dirt.plant(task.FertilizerId, Game1.MasterPlayer, isFertilizer: true))
+                {
+                    ConsumeFromChests(chests, task.FertilizerId, 1);
+                }
 
                 // Plant manually: HoeDirt.plant's seed branch validates against the FARMER's
                 // current location, which is wrong for NPC-driven planting.

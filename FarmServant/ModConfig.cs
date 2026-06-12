@@ -11,7 +11,7 @@ internal sealed class ModConfig
     // The helper replants harvested crops when matching seeds are found in chests.
     public bool HelperReplants { get; set; } = true;
 
-    // The helper applies fertilizer from chests to unfertilized tilled soil.
+    // The helper picks the best fertilizer from chests for each crop based on value and time left.
     public bool HelperFertilizes { get; set; } = true;
 
     // Key that calls the helper command menu.
