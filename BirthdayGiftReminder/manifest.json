@@ -1,7 +1,7 @@
 ﻿{
     "Name":  "生日礼物提醒",
     "Author":  "youzi",
-    "Version":  "0.1.1",
+    "Version":  "0.1.2",
     "Description":  "村民生日当天提醒，并列出最爱/喜欢的礼物。",
     "UniqueID":  "Codex.BirthdayGiftReminder",
     "EntryDll":  "BirthdayGiftReminder.dll",

@@ -147,20 +147,14 @@ internal sealed class ModEntry : Mod
 
         string qualifiedId = token.StartsWith('(') ? token : $"(O){token}";
 
-        try
-        {
-            Item item = ItemRegistry.Create(qualifiedId);
-            string displayName = item.DisplayName;
+        // allowNull: invalid ids (or tag/category tokens) return null instead of an Error Item.
+        // The Error Item display name is localized (e.g. "错误物品" in Chinese), so string matching can't reliably filter it.
+        if (ItemRegistry.Create(qualifiedId, allowNull: true) is Item item && !string.IsNullOrWhiteSpace(item.DisplayName))
+            return item.DisplayName;
 
-            if (!string.IsNullOrWhiteSpace(displayName) && !displayName.Contains("Error Item", StringComparison.OrdinalIgnoreCase))
-                return displayName;
-        }
-        catch
-        {
-            // Some gift taste entries are tags or item categories, not concrete item IDs.
-        }
-
-        return token.Replace('_', ' ');
+        // Unrecognized context tags (food_*, season_*, color_*, item_*, ...) would otherwise leak raw English.
+        // Return empty so the caller's IsNullOrWhiteSpace filter drops them.
+        return string.Empty;
     }
 
     private void ShowReminder(string displayName, GiftSuggestions suggestions)
