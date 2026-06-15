@@ -499,7 +499,11 @@ internal sealed class ModEntry : Mod
             // Match the catch's quality so a same-fish-but-different-quality stack isn't mistaken
             // for free space.
             int quality = this.Helper.Reflection.GetField<int>(rod, "fishQuality").GetValue();
-            return Game1.player.couldInventoryAcceptThisItem(rod.whichFish.QualifiedItemId, 1, quality);
+            // Treasure-hunter bait (and similar) can catch more than one fish at once, so check
+            // for the full incoming stack; otherwise a full inventory pops an overflow grab menu
+            // and Context.IsPlayerFree goes false, stalling the auto loop.
+            int stack = Math.Max(1, rod.numberOfFishCaught);
+            return Game1.player.couldInventoryAcceptThisItem(rod.whichFish.QualifiedItemId, stack, quality);
         }
         catch
         {
@@ -568,8 +572,8 @@ internal sealed class ModEntry : Mod
         float barPosition = this.Helper.Reflection.GetField<float>(bobberBar, "bobberBarPos").GetValue();
         int barHeight = this.Helper.Reflection.GetField<int>(bobberBar, "bobberBarHeight").GetValue();
 
-        float targetPosition = fishPosition - barHeight / 2f;
-        targetPosition = ClampToFishingArea(targetPosition, bobberBar.height, barHeight);
+        float targetPosition = CenterBarOn(fishPosition, barHeight);
+        targetPosition = ClampToFishingArea(targetPosition, FishingBarTrackHeight, barHeight);
 
         this.MoveBarToTarget(bobberBar, barPosition, targetPosition, this.config.FollowStrength);
     }
@@ -587,8 +591,8 @@ internal sealed class ModEntry : Mod
         float treasurePosition = this.Helper.Reflection.GetField<float>(bobberBar, "treasurePosition").GetValue();
 
         // The treasure icon is roughly 64px tall, so aim the bar at its center.
-        float targetPosition = treasurePosition + 32f - barHeight / 2f;
-        targetPosition = ClampToFishingArea(targetPosition, bobberBar.height, barHeight);
+        float targetPosition = CenterBarOn(treasurePosition + 32f, barHeight);
+        targetPosition = ClampToFishingArea(targetPosition, FishingBarTrackHeight, barHeight);
 
         this.MoveBarToTarget(bobberBar, barPosition, targetPosition, this.config.TreasureFollowStrength);
 
@@ -616,9 +620,22 @@ internal sealed class ModEntry : Mod
             progressField.SetValue(minimumProgress);
     }
 
+    // The bobber bar slides along a 568px track (BobberBar.bobberBarTrackHeight); the game's
+    // legal range for bobberBarPos is [0, 568 - barHeight]. BobberBar.height stays at its
+    // base-constructed 636 and is never updated, so it must NOT be used as the usable height.
+    private const int FishingBarTrackHeight = 568;
+
+    // The game counts the fish as "inside the bar" while bobberPosition is within
+    // [bobberBarPos - 16, bobberBarPos + barHeight - 44]. Centering a point in that window means
+    // solving point = bobberBarPos + (barHeight - 44 - 16) / 2, i.e. bobberBarPos = point - barHeight/2 + 30.
+    private static float CenterBarOn(float point, int barHeight)
+    {
+        return point - barHeight / 2f + 30f;
+    }
+
     private static float ClampToFishingArea(float position, int menuHeight, int barHeight)
     {
-        int usableHeight = menuHeight > 0 ? menuHeight : 568;
+        int usableHeight = menuHeight > 0 ? menuHeight : FishingBarTrackHeight;
         return Math.Clamp(position, 0f, Math.Max(0f, usableHeight - barHeight));
     }
 }

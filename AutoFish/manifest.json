@@ -1,7 +1,7 @@
 {
   "Name": "自动钓鱼",
   "Author": "youzi",
-  "Version": "1.0.1",
+  "Version": "1.0.2",
   "Description": "自动跟鱼、自动咬钩、宝箱优先；水边一键全自动钓鱼，满力抛竿，宝箱奖励增强。",
   "UniqueID": "Codex.AutoFish",
   "EntryDll": "AutoFish.dll",
