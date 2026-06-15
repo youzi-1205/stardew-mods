@@ -25,6 +25,7 @@ internal sealed class ModEntry : Mod
     private int idleTicks;
     private int legRetries;
     private int warpPendingTicks = -1; // >=0 while a warp transition is in progress
+    private int warpFailures;          // consecutive warps that didn't change the map (timed out)
     private int diagTicks;
     private Vector2 lastWalkPosition;
     private int stuckTicks;
@@ -94,6 +95,7 @@ internal sealed class ModEntry : Mod
         if (Game1.player.controller != null)
             Game1.player.controller = null;
         this.warpPendingTicks = -1;
+        this.warpFailures = 0; // the warp actually changed maps → forgive prior timeouts
         this.temporaryTargetTile = null;
         this.idleTicks = 0;
         this.legRetries = 0;
@@ -107,6 +109,19 @@ internal sealed class ModEntry : Mod
     /// doesn't fire a second warp during the fade before <see cref="OnWarped"/> arrives.</summary>
     private void DoWarp(Warp warp)
     {
+        // A warp whose target is the current map wouldn't change locations: OnWarped never fires, we
+        // time out after ~1.5s and re-plan — and can pick the same warp again, spinning forever. Treat
+        // it as an unroutable leg instead.
+        GameLocation? loc = Game1.currentLocation;
+        if (loc != null
+            && (string.Equals(warp.TargetName, loc.Name, StringComparison.OrdinalIgnoreCase)
+                || string.Equals(warp.TargetName, loc.NameOrUniqueName, StringComparison.OrdinalIgnoreCase)))
+        {
+            this.Monitor.Log($"Warp target '{warp.TargetName}' is the current map; aborting route.", LogLevel.Info);
+            this.StopRouting($"找不到通往「{this.destDisplayName}」的路线。", success: false);
+            return;
+        }
+
         this.legWarp = null;
         this.warpPendingTicks = 0;
         this.Monitor.Log($"Warping: {Game1.currentLocation?.Name} -> {warp.TargetName} ({warp.TargetX},{warp.TargetY}).", LogLevel.Info);
@@ -131,6 +146,17 @@ internal sealed class ModEntry : Mod
             if (this.warpPendingTicks > 90) // ~1.5s with no Warped event → it didn't take
             {
                 this.warpPendingTicks = -1;
+
+                // No final exit here originally: a warp that never changes maps would re-plan, pick a
+                // warp again, time out again… forever. Cap consecutive failed warps so we give up.
+                // (warpFailures is cleared in OnWarped, i.e. only when a warp truly lands us elsewhere.)
+                if (++this.warpFailures > 5)
+                {
+                    this.Monitor.Log($"Warp repeatedly failed (still in '{Game1.currentLocation?.Name}'); giving up.", LogLevel.Info);
+                    this.StopRouting("路被挡住了，无法到达目的地。", success: false);
+                    return;
+                }
+
                 this.Monitor.Log($"Warp didn't fire (still in '{Game1.currentLocation?.Name}'); re-planning.", LogLevel.Info);
                 this.StartLeg();
             }
@@ -167,7 +193,10 @@ internal sealed class ModEntry : Mod
 
                     if (IsBlockedByCharacter())
                     {
-                        if (++this.npcWaitTicks <= 300) // up to ~5s of patience
+                        // We only reach this block once per ~45 stuck ticks (stuckTicks resets above),
+                        // so the patience cap is counted in those ~45-tick units: 7 units ≈ 315 ticks
+                        // ≈ 5 real seconds. (A flat 300 here meant ~300×45 ticks ≈ 4 minutes.)
+                        if (++this.npcWaitTicks <= 7) // up to ~5s of patience
                         {
                             this.Monitor.Log("Blocked by a character with no detour; waiting for them to move.", LogLevel.Trace);
                             return;
@@ -264,6 +293,18 @@ internal sealed class ModEntry : Mod
 
     private void BeginRouting(string locationName, Point tile, string displayName)
     {
+        // Riding a horse uses a different collision box and pixel alignment than the farmer, so the
+        // arrival/alignment math here would mis-fire (stalls, teleport-like jumps, broken animation).
+        // Adapting to the horse's box is too risky — refuse politely instead.
+        if (Game1.player != null && Game1.player.isRidingHorse())
+        {
+            if (Game1.activeClickableMenu != null)
+                Game1.exitActiveMenu();
+            this.Monitor.Log("Routing requested while riding a horse; refusing.", LogLevel.Info);
+            Game1.addHUDMessage(HUDMessage.ForCornerTextbox("骑马时暂不支持自动寻路。"));
+            return;
+        }
+
         if (Game1.activeClickableMenu != null)
             Game1.exitActiveMenu();
 
@@ -274,6 +315,7 @@ internal sealed class ModEntry : Mod
         this.finalLeg = false;
         this.legWarp = null;
         this.warpPendingTicks = -1;
+        this.warpFailures = 0;
         this.temporaryTargetTile = null;
         this.idleTicks = 0;
         this.legRetries = 0;
@@ -690,6 +732,7 @@ internal sealed class ModEntry : Mod
         this.legWarp = null;
         this.destDisplayName = "";
         this.warpPendingTicks = -1;
+        this.warpFailures = 0;
         this.temporaryTargetTile = null;
         this.idleTicks = 0;
         this.legRetries = 0;
@@ -735,9 +778,10 @@ internal sealed class ModEntry : Mod
                 return true;
         }
 
+        long localId = Game1.player?.UniqueMultiplayerID ?? -1L;
         foreach (Farmer farmer in loc.farmers)
         {
-            if (farmer.UniqueMultiplayerID == Game1.player.UniqueMultiplayerID)
+            if (Game1.player != null && farmer.UniqueMultiplayerID == localId)
                 continue;
             if (farmer.GetBoundingBox().Intersects(box))
                 return true;
@@ -813,7 +857,7 @@ internal sealed class ModEntry : Mod
 
         foreach (var pair in loc.doors.Pairs)
         {
-            Warp? warp = loc.getWarpFromDoor(pair.Key, Game1.player);
+            Warp? warp = TryGetWarpFromDoor(loc, pair.Key);
             if (warp != null && ShouldUseWarp(warp, seen))
                 yield return warp;
         }
@@ -823,9 +867,23 @@ internal sealed class ModEntry : Mod
             if (!building.HasIndoors())
                 continue;
 
-            Warp? warp = loc.getWarpFromDoor(building.getPointForHumanDoor(), Game1.player);
+            Warp? warp = TryGetWarpFromDoor(loc, building.getPointForHumanDoor());
             if (warp != null && ShouldUseWarp(warp, seen))
                 yield return warp;
+        }
+    }
+
+    /// <summary>Resolve a door's warp, swallowing the rare crash where an indoor map's warp list is
+    /// out of range — one bad door must not abort the whole route's warp scan.</summary>
+    private static Warp? TryGetWarpFromDoor(GameLocation loc, Point door)
+    {
+        try
+        {
+            return loc.getWarpFromDoor(door, Game1.player);
+        }
+        catch
+        {
+            return null;
         }
     }
 
