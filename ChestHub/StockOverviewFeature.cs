@@ -35,7 +35,8 @@ internal sealed class StockOverviewFeature
             Game1.exitActiveMenu();
             this.helper.Input.Suppress(e.Button);
         }
-        else if (Context.IsPlayerFree && Game1.activeClickableMenu == null)
+        else if (Context.IsPlayerFree && Game1.activeClickableMenu == null
+            && !Game1.IsChatting && Game1.keyboardDispatcher.Subscriber == null)
         {
             Game1.activeClickableMenu = new StockMenu(StockAggregator.Collect());
             Game1.playSound("bigSelect");

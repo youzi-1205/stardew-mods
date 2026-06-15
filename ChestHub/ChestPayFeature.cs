@@ -2,6 +2,7 @@
 using StardewModdingAPI.Events;
 using StardewValley;
 using StardewValley.GameData.Buildings;
+using StardewValley.Inventories;
 using StardewValley.Locations;
 using StardewValley.Menus;
 using StardewValley.Objects;
@@ -294,41 +295,52 @@ internal sealed class ChestPayFeature
 
         int deficit = needed - have;
         int movedTotal = 0;
+        bool inventoryFull = false;
 
         foreach (Chest chest in GetAllChests())
         {
-            if (deficit <= 0)
+            if (deficit <= 0 || inventoryFull)
                 break;
 
-            int available = chest.Items.CountId(itemId);
+            IInventory items = chest.GetItemsForPlayer();
+            int available = items.CountId(itemId);
             if (available <= 0)
                 continue;
 
+            // Move in batches no bigger than the item's max stack size, so counts above 999 don't
+            // get silently truncated when the stack is created. Only reduce the chest by what the
+            // backpack actually accepted, so nothing is ever lost or duplicated.
             int take = Math.Min(available, deficit);
-            chest.Items.ReduceId(itemId, take);
-
-            Item? item = ItemRegistry.Create(itemId, take, allowNull: true);
-            if (item == null)
+            while (take > 0)
             {
-                chest.addItem(ItemRegistry.Create(itemId, take));
-                break;
-            }
+                Item? item = ItemRegistry.Create(itemId, 1, allowNull: true);
+                if (item == null)
+                    break; // unknown item id: leave the chest untouched rather than spawning an Error Item
 
-            Item? leftover = Game1.player.addItemToInventory(item);
-            int moved = take - (leftover?.Stack ?? 0);
-            deficit -= moved;
-            movedTotal += moved;
+                int batch = Math.Min(take, item.maximumStackSize());
+                item.Stack = batch;
 
-            if (leftover != null)
-            {
-                // Inventory is full — put the rest back where it came from.
-                chest.addItem(leftover);
-                if (!this.warnedNoSpace)
+                Item? leftover = Game1.player.addItemToInventory(item);
+                int moved = batch - (leftover?.Stack ?? 0);
+                if (moved > 0)
                 {
-                    this.warnedNoSpace = true;
-                    Game1.addHUDMessage(HUDMessage.ForCornerTextbox("背包放不下更多代付材料了，请清出一格。"));
+                    items.ReduceId(itemId, moved);
+                    deficit -= moved;
+                    movedTotal += moved;
+                    take -= moved;
                 }
-                break;
+
+                if (leftover != null)
+                {
+                    // Inventory is full — the unaccepted part was never taken from the chest.
+                    inventoryFull = true;
+                    if (!this.warnedNoSpace)
+                    {
+                        this.warnedNoSpace = true;
+                        Game1.addHUDMessage(HUDMessage.ForCornerTextbox("背包放不下更多代付材料了，请清出一格。"));
+                    }
+                    break;
+                }
             }
         }
 
@@ -350,27 +362,34 @@ internal sealed class ChestPayFeature
     {
         foreach ((string itemId, int amount) in this.pulled)
         {
-            int have = Game1.player.Items.CountId(itemId);
-            int give = Math.Min(amount, have);
-            if (give <= 0)
-                continue;
+            int give = Math.Min(amount, Game1.player.Items.CountId(itemId));
 
-            Game1.player.Items.ReduceId(itemId, give);
-            Item? remaining = ItemRegistry.Create(itemId, give, allowNull: true);
-            if (remaining == null)
-                continue;
-
-            // Chests already holding the item first, then any chest.
-            foreach (Chest chest in GetAllChests().OrderByDescending(c => c.Items.CountId(itemId) > 0))
+            // Hand back in batches no bigger than the max stack size so counts above 999 aren't
+            // truncated when the stack is created. The player stack is reduced only by what was
+            // actually moved into a chest (or kept in the backpack), so nothing is lost.
+            while (give > 0)
             {
-                remaining = chest.addItem(remaining);
+                Item? remaining = ItemRegistry.Create(itemId, 1, allowNull: true);
                 if (remaining == null)
-                    break;
-            }
+                    break; // unknown item id: leave it in the backpack rather than losing it
 
-            // Every chest full? Keep it in the player's inventory rather than losing it.
-            if (remaining != null)
-                Game1.player.addItemToInventory(remaining);
+                int batch = Math.Min(give, remaining.maximumStackSize());
+                remaining.Stack = batch;
+                Game1.player.Items.ReduceId(itemId, batch);
+                give -= batch;
+
+                // Chests already holding the item first, then any chest.
+                foreach (Chest chest in GetAllChests().OrderByDescending(c => c.GetItemsForPlayer().CountId(itemId) > 0))
+                {
+                    remaining = chest.addItem(remaining);
+                    if (remaining == null)
+                        break;
+                }
+
+                // Every chest full? Keep it in the player's inventory rather than losing it.
+                if (remaining != null)
+                    Game1.player.addItemToInventory(remaining);
+            }
         }
 
         this.pulled.Clear();
