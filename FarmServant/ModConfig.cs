@@ -6,7 +6,7 @@ internal sealed class ModConfig
     public bool EnableHelper { get; set; } = true;
 
     // Display name of the helper.
-    public string HelperName { get; set; } = "仆人";
+    public string HelperName { get; set; } = "鹏神";
 
     // The helper replants harvested crops when matching seeds are found in chests.
     public bool HelperReplants { get; set; } = true;

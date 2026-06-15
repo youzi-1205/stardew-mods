@@ -1836,8 +1836,13 @@ internal sealed class FarmhandHelper
     {
         var result = new List<Item>();
 
+        // Debris carrying a concrete Item instance (rather than an itemId to spawn): collect it
+        // directly. CollectNearbyDebris only sweeps debris created AFTER the helper began working at
+        // a site (pre-existing debris is excluded via the work-site snapshot), so this picks up his
+        // own knocked-loose drops — not items the player deliberately dropped earlier.
         if (debris.item != null)
         {
+            result.Add(debris.item);
             return result;
         }
 
@@ -2267,7 +2272,10 @@ internal sealed class FarmhandHelper
 
     private bool ShouldClearTree(Tree tree)
     {
-        return tree.growthStage.Value >= 0 && !tree.tapped.Value;
+        // growthStage is always >= 0, so this reduces to "any non-tapped tree". Stage/size filtering
+        // is the callers' job (IsSmallTree for the wood-clearing tasks, !IsSmallTree for the explicit
+        // fell-tree command); here we only refuse tapped (productive) trees.
+        return !tree.tapped.Value;
     }
 
     private bool CanCollectProduce(FarmAnimal animal)
