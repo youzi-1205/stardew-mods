@@ -41,7 +41,7 @@ SMAPI 安装结束时会显示一行启动参数（类似 `"C:\...\Stardew Valle
 
 ### （可选）游戏内配置菜单 GMCM
 
-「矿洞向导」「自动寻路」支持 [Generic Mod Config Menu (GMCM)](https://www.nexusmods.com/stardewvalley/mods/5098)：装上它后，可在**标题画面齿轮按钮**或**游戏内设置菜单底部**用图形界面勾选开关、拖滑块调参数（采矿倍率、寻路/传送模式等），免去手动编辑 `config.json`。不装也不影响功能。
+「矿洞向导」「自动寻路」「背包扩充」支持 [Generic Mod Config Menu (GMCM)](https://www.nexusmods.com/stardewvalley/mods/5098)：装上它后，可在**标题画面齿轮按钮**或**游戏内设置菜单底部**用图形界面勾选开关、拖滑块调参数（采矿倍率、寻路/传送模式、背包格子数等），免去手动编辑 `config.json`。不装也不影响功能。
 
 ---
 
@@ -56,6 +56,7 @@ SMAPI 安装结束时会显示一行启动参数（类似 `"C:\...\Stardew Valle
 | `BirthdayGiftReminder` | **生日礼物提醒** | 村民生日与送礼提醒 |
 | `NoTerminal` | **隐藏控制台** | 自动隐藏 SMAPI 黑窗口 |
 | `MineHelper` | **矿洞向导** | 标出下楼梯子+敲指定石头出梯子；采矿掉落/矿石刷新倍率（可配） |
+| `BiggerBackpack` | **背包扩充** | 背包扩大到 48 格（4 行），各界面同步显示，可配 |
 
 ---
 
