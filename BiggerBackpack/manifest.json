@@ -1,0 +1,13 @@
+{
+  "Name": "背包扩充",
+  "Author": "youzi",
+  "Version": "0.1.0",
+  "Description": "把背包格子数扩大到原版 36 格以上（默认 48 = 4 行），可配置。",
+  "UniqueID": "Codex.BiggerBackpack",
+  "EntryDll": "BiggerBackpack.dll",
+  "MinimumApiVersion": "4.0.0",
+  "UpdateKeys": [],
+  "Dependencies": [
+    { "UniqueID": "spacechase0.GenericModConfigMenu", "IsRequired": false }
+  ]
+}
