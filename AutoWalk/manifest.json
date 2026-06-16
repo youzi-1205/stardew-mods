@@ -1,12 +1,18 @@
-﻿{
+{
     "Name":  "自动寻路",
     "Author":  "youzi",
-    "Version":  "0.1.9",
+    "Version":  "0.2.0",
     "Description":  "按 M 打开世界地图点击目的地，跨地图自动奔跑前往；点击鼠标随时停止。",
     "UniqueID":  "Codex.AutoWalk",
     "EntryDll":  "AutoWalk.dll",
     "MinimumApiVersion":  "4.0.0",
     "UpdateKeys":  [
 
-                   ]
+                   ],
+    "Dependencies":  [
+                         {
+                             "UniqueID":  "spacechase0.GenericModConfigMenu",
+                             "IsRequired":  false
+                         }
+                     ]
 }

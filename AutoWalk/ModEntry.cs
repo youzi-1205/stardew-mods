@@ -13,6 +13,7 @@ internal sealed class ModEntry : Mod
 {
     private ModConfig config = new();
     private SButton openMapKey = SButton.M;
+    private NavMode navMode = NavMode.Pathfind;
 
     // Routing state.
     private bool routing;
@@ -35,12 +36,28 @@ internal sealed class ModEntry : Mod
     public override void Entry(IModHelper helper)
     {
         this.config = helper.ReadConfig<ModConfig>();
-        if (!Enum.TryParse(this.config.OpenMapKey, ignoreCase: true, out this.openMapKey))
-            this.openMapKey = SButton.M;
+        this.RefreshConfigCache();
 
+        helper.Events.GameLoop.GameLaunched += this.OnGameLaunched;
         helper.Events.Input.ButtonPressed += this.OnButtonPressed;
         helper.Events.Player.Warped += this.OnWarped;
         helper.Events.GameLoop.UpdateTicked += this.OnUpdateTicked;
+    }
+
+    /// <summary>Re-derive the cached fields parsed out of <see cref="config"/>. Called on load and
+    /// whenever GMCM saves/resets the config, so a changed Mode/OpenMapKey takes effect at once.</summary>
+    private void RefreshConfigCache()
+    {
+        if (!Enum.TryParse(this.config.OpenMapKey, ignoreCase: true, out this.openMapKey))
+            this.openMapKey = SButton.M;
+        if (!Enum.TryParse(this.config.Mode, ignoreCase: true, out this.navMode))
+            this.navMode = NavMode.Pathfind;
+    }
+
+    /// <summary>Current navigation mode, defaulting to Pathfind for any unrecognised value.</summary>
+    private NavMode GetMode()
+    {
+        return Enum.TryParse(this.config.Mode, ignoreCase: true, out NavMode mode) ? mode : NavMode.Pathfind;
     }
 
     private void OnButtonPressed(object? sender, ButtonPressedEventArgs e)
@@ -55,7 +72,17 @@ internal sealed class ModEntry : Mod
             if (e.Button == SButton.MouseLeft && this.TryResolveMapClick(page, out string loc, out Point tile, out string displayName))
             {
                 this.Helper.Input.Suppress(e.Button);
-                this.BeginRouting(loc, tile, displayName);
+                switch (this.GetMode())
+                {
+                    case NavMode.Teleport:
+                        this.BeginTeleport(loc, tile, displayName);
+                        break;
+                    case NavMode.Off:
+                        break; // map stays view-only; the click does nothing
+                    default:
+                        this.BeginRouting(loc, tile, displayName);
+                        break;
+                }
             }
             else if (e.Button == this.openMapKey)
             {
@@ -324,6 +351,29 @@ internal sealed class ModEntry : Mod
         this.Monitor.Log($"Routing to '{this.destDisplayName}' ({locationName} tile {tile}) from '{Game1.currentLocation?.Name}'.", LogLevel.Info);
         Game1.addHUDMessage(HUDMessage.ForCornerTextbox($"前往「{this.destDisplayName}」…"));
         this.StartLeg();
+    }
+
+    /// <summary>Warp the player straight to the chosen destination, skipping pathfinding entirely.</summary>
+    private void BeginTeleport(string locationName, Point tile, string displayName)
+    {
+        // Any in-progress route would otherwise keep driving the player after the teleport.
+        if (this.routing)
+            this.StopRouting(null, success: false, silent: true);
+
+        if (Game1.activeClickableMenu != null)
+            Game1.exitActiveMenu();
+
+        string label = string.IsNullOrWhiteSpace(displayName) ? locationName : displayName;
+        this.Monitor.Log($"Teleporting to '{label}' ({locationName} tile {tile}) from '{Game1.currentLocation?.Name}'.", LogLevel.Info);
+        Game1.addHUDMessage(HUDMessage.ForCornerTextbox($"传送到「{label}」"));
+
+        // Point.Zero means the click didn't resolve a specific tile (e.g. a building click); let the
+        // game drop us at the location's default arrival spot by passing -1/-1.
+        int x = tile == Point.Zero ? -1 : tile.X;
+        int y = tile == Point.Zero ? -1 : tile.Y;
+
+        // 2 = face down after the warp. Note: a horse won't follow through this warp (vanilla limit).
+        Game1.warpFarmer(locationName, x, y, 2);
     }
 
     private void StartLeg()
@@ -1324,4 +1374,70 @@ internal sealed class ModEntry : Mod
 
         return IsOccupiedByDynamicBlocker(location, reach);
     }
+
+    private void OnGameLaunched(object? sender, GameLaunchedEventArgs e)
+    {
+        var gmcm = this.Helper.ModRegistry.GetApi<IGenericModConfigMenuApi>("spacechase0.GenericModConfigMenu");
+        if (gmcm is null)
+            return;
+
+        gmcm.Register(
+            this.ModManifest,
+            reset: () => { this.config = new ModConfig(); this.RefreshConfigCache(); },
+            save: () => { this.Helper.WriteConfig(this.config); this.RefreshConfigCache(); });
+
+        gmcm.AddSectionTitle(this.ModManifest, () => "自动寻路");
+
+        gmcm.AddTextOption(
+            this.ModManifest,
+            getValue: () => this.config.Mode,
+            setValue: value => this.config.Mode = value,
+            name: () => "点击地图后",
+            tooltip: () => "选择点击世界地图目的地后的行为：自动寻路前往、直接传送，或关闭（仅查看地图）。",
+            allowedValues: new[] { "Pathfind", "Teleport", "Off" },
+            formatAllowedValue: value => value switch
+            {
+                "Teleport" => "传送",
+                "Off" => "关闭",
+                _ => "自动寻路"
+            });
+
+        gmcm.AddTextOption(
+            this.ModManifest,
+            getValue: () => this.config.OpenMapKey,
+            setValue: value => this.config.OpenMapKey = value,
+            name: () => "打开地图按键",
+            tooltip: () => "用于打开世界地图的按键名（SButton 名称，例如 M）。");
+
+        gmcm.AddBoolOption(
+            this.ModManifest,
+            getValue: () => this.config.RunWhilePathing,
+            setValue: value => this.config.RunWhilePathing = value,
+            name: () => "寻路时奔跑",
+            tooltip: () => "自动寻路时强制奔跑而非行走。");
+
+        gmcm.AddBoolOption(
+            this.ModManifest,
+            getValue: () => this.config.StopOnMouseClick,
+            setValue: value => this.config.StopOnMouseClick = value,
+            name: () => "点击鼠标停止",
+            tooltip: () => "自动寻路过程中点击鼠标即停止。");
+
+        gmcm.AddBoolOption(
+            this.ModManifest,
+            getValue: () => this.config.StopOnMovementKey,
+            setValue: value => this.config.StopOnMovementKey = value,
+            name: () => "按移动键停止",
+            tooltip: () => "自动寻路过程中按下移动键（WASD/方向键）即停止，恢复手动控制。");
+    }
+}
+
+/// <summary>The subset of Generic Mod Config Menu's API this mod uses. Optional dependency:
+/// resolved at runtime via the mod registry, absent if GMCM isn't installed.</summary>
+public interface IGenericModConfigMenuApi
+{
+    void Register(IManifest mod, Action reset, Action save, bool titleScreenOnly = false);
+    void AddSectionTitle(IManifest mod, Func<string> text, Func<string>? tooltip = null);
+    void AddBoolOption(IManifest mod, Func<bool> getValue, Action<bool> setValue, Func<string> name, Func<string>? tooltip = null, string? fieldId = null);
+    void AddTextOption(IManifest mod, Func<string> getValue, Action<string> setValue, Func<string> name, Func<string>? tooltip = null, string[]? allowedValues = null, Func<string, string>? formatAllowedValue = null, string? fieldId = null);
 }
