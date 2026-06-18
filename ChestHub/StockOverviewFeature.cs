@@ -143,33 +143,126 @@ internal static class StockAggregator
     }
 }
 
-/// <summary>Scrollable grid of everything the player owns.</summary>
+/// <summary>Scrollable, category-grouped list of everything the player owns. Each item shows its
+/// icon, name and total under a header for its category.</summary>
 internal sealed class StockMenu : IClickableMenu
 {
-    private const int Columns = 12;
-    private const int VisibleRows = 7;
-    private const int Cell = 68;
+    private const int Columns = 3;     // item cards per row
+    private const int CardW = 232;     // width of one icon+name card
+    private const int CardH = 64;      // icon size and card height
+    private const int RowH = CardH + 12;
+    private const int HeaderH = 44;
+    private const int TopPad = 88;     // space above the list (title)
+    private const int BotPad = 72;     // space below the list (hint)
 
-    private readonly List<StockEntry> entries;
+    private enum RowKind { Header, Items }
+
+    /// <summary>One drawn line: either a category header or a row of up to <see cref="Columns"/> item cards.</summary>
+    private sealed class Row
+    {
+        public RowKind Kind;
+        public int Height;
+        public string Title = "";
+        public Color TitleColor;
+        public StockEntry[] Items = Array.Empty<StockEntry>();
+    }
+
+    private readonly List<Row> rows;
+    private readonly int itemCount;
+    private readonly int visibleH;
+    private readonly int maxTopRow;
     private int topRow;
     private string hoverText = "";
 
     private int GridX => this.xPositionOnScreen + 32;
-    private int GridY => this.yPositionOnScreen + 96;
-    private int MaxTopRow => Math.Max(0, (this.entries.Count + Columns - 1) / Columns - VisibleRows);
+    private int GridY => this.yPositionOnScreen + TopPad;
 
     public StockMenu(List<StockEntry> entries)
-        : base(0, 0, Columns * Cell + 64, VisibleRows * Cell + 160, showUpperRightCloseButton: true)
+        : base(0, 0, Columns * CardW + 64, 0, showUpperRightCloseButton: true)
     {
-        this.entries = entries;
+        this.itemCount = entries.Count;
+        this.rows = BuildRows(entries);
+
+        // Fit ~7 item rows, but never spill past the screen on small resolutions.
+        this.visibleH = Math.Min(7 * RowH, Math.Max(3 * RowH, Game1.uiViewport.Height - 220));
+        this.height = this.visibleH + TopPad + BotPad;
+
         this.xPositionOnScreen = (Game1.uiViewport.Width - this.width) / 2;
         this.yPositionOnScreen = (Game1.uiViewport.Height - this.height) / 2;
         this.initializeUpperRightCloseButton();
+
+        this.maxTopRow = this.ComputeMaxTopRow();
+    }
+
+    /// <summary>Group the (already category-sorted) entries and lay each group out as a header row
+    /// followed by item rows.</summary>
+    private static List<Row> BuildRows(List<StockEntry> entries)
+    {
+        var rows = new List<Row>();
+        foreach (var group in entries.GroupBy(GroupName))
+        {
+            rows.Add(new Row
+            {
+                Kind = RowKind.Header,
+                Height = HeaderH,
+                Title = group.Key,
+                TitleColor = HeaderColor(group.First().Sample.getCategoryColor()),
+            });
+
+            var items = group.ToList();
+            for (int i = 0; i < items.Count; i += Columns)
+            {
+                int n = Math.Min(Columns, items.Count - i);
+                var cards = new StockEntry[n];
+                items.CopyTo(i, cards, 0, n);
+                rows.Add(new Row { Kind = RowKind.Items, Height = RowH, Items = cards });
+            }
+        }
+        return rows;
+    }
+
+    private static string GroupName(StockEntry entry)
+    {
+        string name = entry.Sample.getCategoryName();
+        return string.IsNullOrWhiteSpace(name) ? "其他" : name;
+    }
+
+    /// <summary>Category colors can be near-white (unreadable on the parchment box); clamp those to gray.</summary>
+    private static Color HeaderColor(Color c)
+        => c.R + c.G + c.B > 620 ? Color.Gray : c;
+
+    /// <summary>Highest scroll position that still fills the viewport from the bottom.</summary>
+    private int ComputeMaxTopRow()
+    {
+        int sum = 0;
+        for (int i = this.rows.Count - 1; i >= 0; i--)
+        {
+            sum += this.rows[i].Height;
+            if (sum > this.visibleH)
+                return i + 1;
+        }
+        return 0;
     }
 
     public override void receiveScrollWheelAction(int direction)
     {
-        this.topRow = Math.Clamp(this.topRow - Math.Sign(direction), 0, this.MaxTopRow);
+        this.topRow = Math.Clamp(this.topRow - Math.Sign(direction), 0, this.maxTopRow);
+    }
+
+    /// <summary>Visit each row visible from the current scroll position with its top Y, stopping
+    /// before any row that would overflow the viewport (so nothing draws past the box).</summary>
+    private void ForEachVisibleRow(Action<Row, int> onRow)
+    {
+        int y = this.GridY;
+        int bottom = this.GridY + this.visibleH;
+        for (int i = this.topRow; i < this.rows.Count; i++)
+        {
+            Row row = this.rows[i];
+            if (y + row.Height > bottom)
+                break;
+            onRow(row, y);
+            y += row.Height;
+        }
     }
 
     public override void performHoverAction(int x, int y)
@@ -188,17 +281,23 @@ internal sealed class StockMenu : IClickableMenu
         this.hoverText = lines.ToString();
     }
 
-    private StockEntry? EntryAt(int x, int y)
+    private StockEntry? EntryAt(int mx, int my)
     {
-        int col = (x - this.GridX) / Cell;
-        int row = (y - this.GridY) / Cell;
-        if (col < 0 || col >= Columns || row < 0 || row >= VisibleRows)
-            return null;
-        if (x < this.GridX || y < this.GridY)
-            return null;
-
-        int index = (this.topRow + row) * Columns + col;
-        return index >= 0 && index < this.entries.Count ? this.entries[index] : null;
+        StockEntry? found = null;
+        this.ForEachVisibleRow((row, y) =>
+        {
+            if (found != null || row.Kind != RowKind.Items)
+                return;
+            for (int c = 0; c < row.Items.Length; c++)
+            {
+                if (new Rectangle(this.GridX + c * CardW, y, CardW, CardH).Contains(mx, my))
+                {
+                    found = row.Items[c];
+                    return;
+                }
+            }
+        });
+        return found;
     }
 
     public override void draw(SpriteBatch b)
@@ -207,31 +306,23 @@ internal sealed class StockMenu : IClickableMenu
         b.Draw(Game1.fadeToBlackRect, Game1.graphics.GraphicsDevice.Viewport.Bounds, Color.Black * 0.5f);
         Game1.drawDialogueBox(this.xPositionOnScreen, this.yPositionOnScreen, this.width, this.height, speaker: false, drawOnlyBox: true);
 
-        // Title + page info.
-        int totalRows = Math.Max(1, (this.entries.Count + Columns - 1) / Columns);
-        string title = $"物品总览（{this.entries.Count} 种）";
+        string title = $"物品总览（{this.itemCount} 种）";
         SpriteText.drawStringWithScrollCenteredAt(b, title, this.xPositionOnScreen + this.width / 2, this.yPositionOnScreen + 4);
-        string pageInfo = $"滚轮翻页  {Math.Min(this.topRow + VisibleRows, totalRows)}/{totalRows} 行";
-        Vector2 pageSize = Game1.smallFont.MeasureString(pageInfo);
-        Utility.drawTextWithShadow(b, pageInfo, Game1.smallFont,
-            new Vector2(this.xPositionOnScreen + this.width - pageSize.X - 48, this.yPositionOnScreen + this.height - 56), Game1.textColor);
 
-        // Item grid.
-        for (int row = 0; row < VisibleRows; row++)
+        this.ForEachVisibleRow((row, y) =>
         {
-            for (int col = 0; col < Columns; col++)
-            {
-                int index = (this.topRow + row) * Columns + col;
-                if (index >= this.entries.Count)
-                    break;
+            if (row.Kind == RowKind.Header)
+                this.DrawHeader(b, row, y);
+            else
+                this.DrawItems(b, row, y);
+        });
 
-                StockEntry entry = this.entries[index];
-                var position = new Vector2(this.GridX + col * Cell, this.GridY + row * Cell);
-
-                b.Draw(Game1.menuTexture, position, Game1.getSourceRectForStandardTileSheet(Game1.menuTexture, 10), Color.White * 0.6f);
-                entry.Sample.Stack = entry.Total;
-                entry.Sample.drawInMenu(b, position, 1f, 1f, 0.9f, StackDrawType.Draw, Color.White, drawShadow: false);
-            }
+        if (this.maxTopRow > 0)
+        {
+            const string hint = "滚轮翻页";
+            Vector2 size = Game1.smallFont.MeasureString(hint);
+            Utility.drawTextWithShadow(b, hint, Game1.smallFont,
+                new Vector2(this.xPositionOnScreen + this.width - size.X - 48, this.yPositionOnScreen + this.height - 56), Game1.textColor);
         }
 
         base.draw(b); // close button
@@ -240,6 +331,51 @@ internal sealed class StockMenu : IClickableMenu
             drawHoverText(b, this.hoverText, Game1.smallFont);
 
         this.drawMouse(b);
+    }
+
+    private void DrawHeader(SpriteBatch b, Row row, int y)
+    {
+        // Colored bar + category name.
+        b.Draw(Game1.staminaRect, new Rectangle(this.GridX, y + 10, 8, HeaderH - 16), row.TitleColor);
+        Utility.drawTextWithShadow(b, row.Title, Game1.smallFont, new Vector2(this.GridX + 20, y + 8), Game1.textColor);
+    }
+
+    private void DrawItems(SpriteBatch b, Row row, int y)
+    {
+        for (int c = 0; c < row.Items.Length; c++)
+        {
+            StockEntry entry = row.Items[c];
+            int x = this.GridX + c * CardW;
+
+            // Icon slot + icon (we draw the total ourselves, so suppress the built-in stack number).
+            var iconPos = new Vector2(x, y);
+            b.Draw(Game1.menuTexture, iconPos, Game1.getSourceRectForStandardTileSheet(Game1.menuTexture, 10), Color.White * 0.6f);
+            entry.Sample.Stack = 1;
+            entry.Sample.drawInMenu(b, iconPos, 1f, 1f, 0.9f, StackDrawType.Hide, Color.White, drawShadow: false);
+
+            // Name + total, to the right of the icon.
+            int textX = x + CardH + 10;
+            float textW = CardW - CardH - 24;
+            string name = Truncate(entry.Sample.DisplayName, Game1.smallFont, textW);
+            Utility.drawTextWithShadow(b, name, Game1.smallFont, new Vector2(textX, y + 8), Game1.textColor);
+            Utility.drawTextWithShadow(b, "×" + entry.Total, Game1.smallFont, new Vector2(textX, y + 36), Game1.textColor * 0.85f);
+        }
+    }
+
+    /// <summary>Trim text with an ellipsis so it fits within <paramref name="maxWidth"/>.</summary>
+    private static string Truncate(string text, SpriteFont font, float maxWidth)
+    {
+        if (font.MeasureString(text).X <= maxWidth)
+            return text;
+
+        var sb = new System.Text.StringBuilder();
+        foreach (char ch in text)
+        {
+            if (font.MeasureString(sb.ToString() + ch + "…").X > maxWidth)
+                break;
+            sb.Append(ch);
+        }
+        return sb.Append('…').ToString();
     }
 }
 
