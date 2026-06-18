@@ -24,7 +24,8 @@ public interface IGenericModConfigMenuApi
 /// inventory menus hard-code 36 slots / 3 rows, so on MenuChanged we give the backpack a taller
 /// InventoryMenu (which itself draws any row count). The full GameMenu inventory tab needs more than a
 /// taller grid — see <see cref="ExpandInventoryPage"/> — because its divider and lower panel are pinned
-/// just below the third row; the shop / chest / crafting hosts only need the taller grid.</summary>
+/// just below the third row; the chest / shipping-bin host (MenuWithInventory) just needs the taller
+/// grid centred in its box — see <see cref="TryExpand"/>.</summary>
 internal sealed class ModEntry : Mod
 {
     private const int VanillaMax = 36;
@@ -137,10 +138,14 @@ internal sealed class ModEntry : Mod
         }
     }
 
-    /// <summary>Replace a <see cref="MenuWithInventory"/> host's player backpack (shop / chest / crafting)
-    /// with a taller grid. These hosts have free space above the backpack, so the extra rows grow upward
-    /// and clear of the menu content below. The slot list is built in the ctor, so we swap the whole
-    /// instance rather than bump capacity.</summary>
+    /// <summary>Replace a <see cref="MenuWithInventory"/> host's player backpack (the chest / shipping-bin
+    /// grid) with a taller one, centred in the box the host actually draws around it. The slot list is
+    /// built in the ctor, so we swap the whole instance rather than bump capacity.
+    ///
+    /// The old approach shifted the grid up by a full row, which (made worse by forcing the
+    /// player-inventory flag on, whose first row also sits 12px higher) pushed the top row out over the
+    /// box's wooden top border — the reported chest bug. Centring the grid in the real box keeps every
+    /// row inside it, and we preserve the host's own inventory flags so behaviour is unchanged.</summary>
     private void TryExpand(IClickableMenu? menu, int target, int rows)
     {
         if (menu is not MenuWithInventory withInventory)
@@ -150,15 +155,33 @@ internal sealed class ModEntry : Mod
         if (old is null || old.capacity >= target)
             return;
 
-        int yShift = (rows - 3) * 64;
-        withInventory.inventory = new InventoryMenu(
+        int gridHeight = 64 * rows + 16; // InventoryMenu's own height (see its base ctor)
+        int newTop;
+        if (menu is ItemGrabMenu)
+        {
+            // ItemGrabMenu draws the backpack inside the lower box from MenuWithInventory.draw
+            // (drawUpperPortion: false): top = y + borderWidth + spaceToClearTopBorder + 64, height =
+            // menu.height - (borderWidth + spaceToClearTopBorder + 192). Centre the grid in that box.
+            int boxTop = menu.yPositionOnScreen + IClickableMenu.borderWidth + IClickableMenu.spaceToClearTopBorder + 64;
+            int boxHeight = menu.height - (IClickableMenu.borderWidth + IClickableMenu.spaceToClearTopBorder + 192);
+            newTop = boxTop + Math.Max(0, (boxHeight - gridHeight) / 2);
+        }
+        else
+        {
+            // Any other host: keep the grid centred on its original centre (grow half a row each way).
+            newTop = old.yPositionOnScreen - (rows - 3) * 32;
+        }
+
+        var rebuilt = new InventoryMenu(
             old.xPositionOnScreen,
-            old.yPositionOnScreen - yShift,
-            playerInventory: true,
+            newTop,
+            playerInventory: old.playerInventory,
             actualInventory: Game1.player.Items,
             highlightMethod: old.highlightMethod,
             capacity: target,
             rows: rows);
+        rebuilt.moveItemSound = old.moveItemSound;
+        withInventory.inventory = rebuilt;
     }
 
     /// <summary>Wire up Generic Mod Config Menu if installed (optional).</summary>
