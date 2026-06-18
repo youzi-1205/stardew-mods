@@ -139,13 +139,15 @@ internal sealed class ModEntry : Mod
     }
 
     /// <summary>Replace a <see cref="MenuWithInventory"/> host's player backpack (the chest / shipping-bin
-    /// grid) with a taller one, centred in the box the host actually draws around it. The slot list is
+    /// grid) with a taller one, positioned in the clear space below the chest panel. The slot list is
     /// built in the ctor, so we swap the whole instance rather than bump capacity.
     ///
-    /// The old approach shifted the grid up by a full row, which (made worse by forcing the
-    /// player-inventory flag on, whose first row also sits 12px higher) pushed the top row out over the
-    /// box's wooden top border — the reported chest bug. Centring the grid in the real box keeps every
-    /// row inside it, and we preserve the host's own inventory flags so behaviour is unchanged.</summary>
+    /// Earlier tries failed because the chest panel (<see cref="ItemGrabMenu.ItemsToGrabMenu"/>) overlaps
+    /// the upper part of the lower box that MenuWithInventory.draw draws around the backpack: shifting the
+    /// grid up — or centring it in that box — put the top row up inside the chest panel / over the seam.
+    /// So anchor the grid in the gap between the chest panel's bottom and the box's bottom, computed from
+    /// the live menu geometry (robust to chest size), and preserve the host's own inventory flags so
+    /// behaviour is unchanged.</summary>
     private void TryExpand(IClickableMenu? menu, int target, int rows)
     {
         if (menu is not MenuWithInventory withInventory)
@@ -155,16 +157,22 @@ internal sealed class ModEntry : Mod
         if (old is null || old.capacity >= target)
             return;
 
-        int gridHeight = 64 * rows + 16; // InventoryMenu's own height (see its base ctor)
         int newTop;
-        if (menu is ItemGrabMenu)
+        if (menu is ItemGrabMenu grab && grab.ItemsToGrabMenu != null)
         {
-            // ItemGrabMenu draws the backpack inside the lower box from MenuWithInventory.draw
-            // (drawUpperPortion: false): top = y + borderWidth + spaceToClearTopBorder + 64, height =
-            // menu.height - (borderWidth + spaceToClearTopBorder + 192). Centre the grid in that box.
+            // Lower box MenuWithInventory.draw(drawUpperPortion:false) draws around the backpack.
             int boxTop = menu.yPositionOnScreen + IClickableMenu.borderWidth + IClickableMenu.spaceToClearTopBorder + 64;
-            int boxHeight = menu.height - (IClickableMenu.borderWidth + IClickableMenu.spaceToClearTopBorder + 192);
-            newTop = boxTop + Math.Max(0, (boxHeight - gridHeight) / 2);
+            int boxBottom = boxTop + menu.height - (IClickableMenu.borderWidth + IClickableMenu.spaceToClearTopBorder + 192);
+
+            // The chest grid sits in the box's upper region, so the backpack goes underneath it. Centre
+            // the rows in the gap between the chest grid's bottom and the box's bottom border.
+            int chestBottom = grab.ItemsToGrabMenu.yPositionOnScreen + grab.ItemsToGrabMenu.height;
+            int gridHeight = 64 * rows;
+            int topLimit = Math.Max(boxTop, chestBottom + 20);
+            int bottomLimit = boxBottom - 8;
+            newTop = topLimit + Math.Max(0, (bottomLimit - topLimit - gridHeight) / 2);
+
+            this.Monitor.Log($"chest backpack expand: menuY={menu.yPositionOnScreen} h={menu.height} boxTop={boxTop} boxBottom={boxBottom} chestBottom={chestBottom} gridH={gridHeight} -> top={newTop} (was {old.yPositionOnScreen})", LogLevel.Debug);
         }
         else
         {
