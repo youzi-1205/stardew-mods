@@ -199,7 +199,7 @@ internal sealed class FarmhandHelper
         var sprite = new AnimatedSprite(spriteAsset, 0, 16, 32);
         Texture2D portrait = this.LoadHelperPortrait(this.GetHelperPortraitAsset(spriteAsset));
         var npc = new NPC(sprite, this.corner.ToVector2() * 64f, "Farm", 2, NpcName, portrait, eventActor: false);
-        npc.speed = Math.Clamp(this.config().HelperSpeed, 2, 8);
+        npc.speed = Math.Clamp(this.config().HelperSpeed, 2, 12);
         npc.farmerPassesThrough = true;
         npc.IsInvisible = false;
         npc.HideShadow = true;
@@ -1239,7 +1239,7 @@ internal sealed class FarmhandHelper
             return;
 
         // Vanilla NPC logic occasionally resets speed — enforce the configured value every tick.
-        int wantSpeed = Math.Clamp(this.config().HelperSpeed, 2, 8);
+        int wantSpeed = Math.Clamp(this.config().HelperSpeed, 2, 12);
         if (this.npc.speed != wantSpeed)
             this.npc.speed = wantSpeed;
 
@@ -2222,7 +2222,7 @@ internal sealed class FarmhandHelper
             _ => 900,
         };
         float multiplier = Math.Max(0.25f, this.config().HelperWorkSpeedMultiplier);
-        return Math.Max(120, (int)(baseMs / multiplier));
+        return Math.Max(60, (int)(baseMs / multiplier));
     }
 
     // Helper tools are pinned at iridium: matching the player's tool level made the GAME spam its

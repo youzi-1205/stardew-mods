@@ -29,11 +29,11 @@ internal sealed class ModConfig
     // Radius around the player scanned when calling the helper.
     public int HelperWorkRadius { get; set; } = 12;
 
-    // Walk speed of the helper (player walk = 2, player run = 5).
-    public int HelperSpeed { get; set; } = 5;
+    // Walk speed of the helper (player walk = 2, player run = 5). Allowed range 2–12.
+    public int HelperSpeed { get; set; } = 8;
 
-    // Work speed multiplier: 2.0 = each task takes half the base time.
-    public float HelperWorkSpeedMultiplier { get; set; } = 2.0f;
+    // Work speed multiplier: higher = faster. 4.0 = each task takes a quarter of the base time.
+    public float HelperWorkSpeedMultiplier { get; set; } = 4.0f;
 
     // Automatically start the daily farm chores in the morning without being asked.
     public bool HelperAutoStartDaily { get; set; } = true;
