@@ -133,11 +133,12 @@ SMAPI 安装结束时会显示一行启动参数（类似 `"C:\...\Stardew Valle
 - **梯子指引**：进矿洞自动标出下楼梯子/竖井（屏幕内高亮、屏幕外边缘指向并显示距离）；本层还没出梯子时，钦定附近一块石头标「敲此下楼」，敲掉它就在原地生成梯子——省去满地图挖、靠运气
 - **采矿掉落倍率**：挖矿洞石头时矿石/煤/宝石掉落 ×N（经验不变）
 - **采石掉煤概率**：敲普通石头时额外掉一块煤的概率，0%–100% 直接设定（独立于原版掉落，0% = 关闭）
+- **采石石头掉落倍率**：敲普通石头时「石头」掉落 ×N（原版约半块/块，缺石头时拉高）
 - **矿石刷新倍率**：每层按倍率多刷矿石节点，**只对该层本来就刷的矿种生效**；可设总倍率，也可单独设铜/铁/金/铱/煤
 - **洞穴凝胶钓获倍率**：在矿洞岩浆区（80–120 层）水中钓鱼时钓到洞穴凝胶的概率倍率（×1 = 原版）
 - 倍率类功能多人下仅房主侧生效
 
-配置：`GuideToLadder`、`OreDropMultiplier`、`CoalDropChance`、`OreSpawnMultiplier` 及各矿种覆盖倍率、`CaveJellyChanceMultiplier`。装 GMCM 后可在游戏内菜单拖滑块调整。
+配置：`GuideToLadder`、`OreDropMultiplier`、`CoalDropChance`、`StoneDropMultiplier`、`OreSpawnMultiplier` 及各矿种覆盖倍率、`CaveJellyChanceMultiplier`。装 GMCM 后可在游戏内菜单拖滑块调整。
 
 ## 生日礼物提醒（BirthdayGiftReminder）
 

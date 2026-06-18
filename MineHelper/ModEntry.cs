@@ -23,6 +23,9 @@ internal sealed class ModConfig
     // (0 = off, 1 = every plain stone drops coal). A direct chance, not a multiplier on vanilla's tiny ~1%.
     public float CoalDropChance { get; set; }
 
+    // Multiply the plain Stone (item 390) dropped when breaking a mine rock (1 = vanilla ~0.5/rock, max 10x).
+    public float StoneDropMultiplier { get; set; } = 1f;
+
     // Multiply the count of ore nodes spawned on each mine level (1 = vanilla, capped at 5x).
     public float OreSpawnMultiplier { get; set; } = 1f;
 
@@ -111,7 +114,7 @@ internal sealed class ModEntry : Mod
         var harmony = new Harmony(this.ModManifest.UniqueID);
         harmony.Patch(
             original: AccessTools.Method(typeof(MineShaft), nameof(MineShaft.checkStoneForItems)),
-            postfix: new HarmonyMethod(typeof(ModEntry), nameof(CoalDropPostfix)));
+            postfix: new HarmonyMethod(typeof(ModEntry), nameof(StoneBreakPostfix)));
         harmony.Patch(
             original: AccessTools.Method(typeof(MineShaft), nameof(MineShaft.getFish)),
             postfix: new HarmonyMethod(typeof(ModEntry), nameof(CaveJellyPostfix)));
@@ -166,6 +169,13 @@ internal sealed class ModEntry : Mod
             tooltip: () => "敲普通矿洞石头时额外掉一块煤的概率（0% = 关闭，100% = 每块石头必掉，独立于原版掉落，仅主机生效）。",
             min: 0f, max: 1f, interval: 0.05f,
             formatValue: v => $"{v * 100f:0}%");
+        gmcm.AddNumberOption(
+            this.ModManifest,
+            getValue: () => this.config.StoneDropMultiplier,
+            setValue: v => this.config.StoneDropMultiplier = v,
+            name: () => "采石石头掉落倍率",
+            tooltip: () => "敲普通矿洞石头时掉落「石头」的倍率（1 = 原版约半块/块，仅主机生效）。",
+            min: 1f, max: 10f, interval: 0.5f);
 
         gmcm.AddSectionTitle(this.ModManifest, () => "矿石刷新");
         gmcm.AddNumberOption(
@@ -261,28 +271,49 @@ internal sealed class ModEntry : Mod
     }
 
     /// <summary>Harmony postfix on <see cref="MineShaft.checkStoneForItems"/>: after the game settles a
-    /// broken stone, roll a flat <see cref="ModConfig.CoalDropChance"/> to drop a bonus lump of coal on top
-    /// of whatever vanilla already gave. This is a direct chance, not a multiplier on vanilla's tiny ~1%, so
-    /// players actually feel it. Only plain rock litter is eligible — every ore/gem/geode/coal/special node
-    /// is consumed by the game's <c>breakStone</c> and early-returns before the coal roll, so those are
-    /// skipped (see <see cref="CoalIneligibleStones"/>). Host-only, like the other drop boosts.</summary>
-    private static void CoalDropPostfix(MineShaft __instance, string stoneId, int x, int y, Farmer who)
+    /// broken plain rock, optionally add bonus coal (flat <see cref="ModConfig.CoalDropChance"/>) and/or
+    /// bonus stone (<see cref="ModConfig.StoneDropMultiplier"/> over the vanilla ~0.5 stone/rock). Only plain
+    /// rock litter is eligible — every ore/gem/geode/coal/special node is consumed by the game's
+    /// <c>breakStone</c> and early-returns before these drops (see <see cref="CoalIneligibleStones"/>). The
+    /// drops are tagged as ours so the OreDropMultiplier pass can't multiply them again, keeping each knob
+    /// independent. Host-only, like the other drop boosts.</summary>
+    private static void StoneBreakPostfix(MineShaft __instance, string stoneId, int x, int y)
     {
-        ModConfig? cfg = Instance?.config;
-        if (cfg is null || cfg.CoalDropChance <= 0f || !Game1.IsMasterGame)
+        ModEntry? self = Instance;
+        ModConfig? cfg = self?.config;
+        if (self is null || cfg is null || !Game1.IsMasterGame)
             return;
 
-        // The coal roll only runs for plain rock; nodes the game's breakStone handles (ore/gem/geode/coal/
-        // mystic 44 …) early-return before it, so they must not receive bonus coal.
+        bool wantCoal = cfg.CoalDropChance > 0f;
+        bool wantStone = cfg.StoneDropMultiplier > 1f;
+        if (!wantCoal && !wantStone)
+            return;
+
+        // These bonuses only apply to plain rock; nodes the game's breakStone handles (ore/gem/geode/coal/
+        // mystic 44 …) early-return before the plain-stone drops, so they must not receive a bonus.
         if (CoalIneligibleStones.Contains(StripObjectPrefix(stoneId)))
             return;
 
-        // Flat per-stone bonus coal chance, independent of vanilla's own roll. RoundProbabilistic turns the
-        // fractional chance into 0/1 coal (and would allow >1 if the chance is ever set above 1).
-        int extra = RoundProbabilistic(cfg.CoalDropChance);
-        long whichPlayer = who?.UniqueMultiplayerID ?? 0;
-        for (int i = 0; i < extra; i++)
-            Game1.createObjectDebris("(O)382", x, y, whichPlayer, __instance);
+        // Flat per-rock bonus coal chance, independent of vanilla's own roll.
+        if (wantCoal)
+            self.AddBonusDrop(__instance, "(O)382", x, y, RoundProbabilistic(cfg.CoalDropChance));
+
+        // Vanilla drops ~0.5 Stone (item 390) per plain rock (50% of 1); scale the bonus by the multiplier.
+        if (wantStone)
+            self.AddBonusDrop(__instance, "(O)390", x, y, RoundProbabilistic(0.5f * (cfg.StoneDropMultiplier - 1f)));
+    }
+
+    /// <summary>Drop <paramref name="count"/> bonus items at a stone's tile, tagged in <see cref="injectedDebris"/>
+    /// so <see cref="OnDebrisListChanged"/>'s OreDropMultiplier pass skips them — otherwise a whitelisted bonus
+    /// (e.g. coal 382) would get multiplied a second time.</summary>
+    private void AddBonusDrop(MineShaft mine, string qualifiedId, int x, int y, int count)
+    {
+        if (count <= 0)
+            return;
+
+        var debris = new Debris(qualifiedId, count, new Vector2((x * 64) + 32, (y * 64) + 32), Game1.player.getStandingPosition());
+        this.injectedDebris.Add(debris);
+        mine.debris.Add(debris);
     }
 
     /// <summary>Harmony postfix on <see cref="MineShaft.getFish"/>: in the mine's lava area (levels 80-120)
