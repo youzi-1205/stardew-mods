@@ -139,15 +139,13 @@ internal sealed class ModEntry : Mod
     }
 
     /// <summary>Replace a <see cref="MenuWithInventory"/> host's player backpack (the chest / shipping-bin
-    /// grid) with a taller one, positioned in the clear space below the chest panel. The slot list is
+    /// grid) with a taller one. The slot list is
     /// built in the ctor, so we swap the whole instance rather than bump capacity.
     ///
-    /// Earlier tries failed because the chest panel (<see cref="ItemGrabMenu.ItemsToGrabMenu"/>) overlaps
-    /// the upper part of the lower box that MenuWithInventory.draw draws around the backpack: shifting the
-    /// grid up — or centring it in that box — put the top row up inside the chest panel / over the seam.
-    /// So anchor the grid in the gap between the chest panel's bottom and the box's bottom, computed from
-    /// the live menu geometry (robust to chest size), and preserve the host's own inventory flags so
-    /// behaviour is unchanged.</summary>
+    /// ItemGrabMenu's lower backpack panel is sized from the host menu height. Growing the grid without
+    /// growing that panel leaves the extra row outside the beige background (or pushed into the overlap
+    /// between the chest and backpack panels). So chest-style hosts grow one row taller and keep the
+    /// backpack on its vanilla anchor; other hosts keep their original centre.</summary>
     private void TryExpand(IClickableMenu? menu, int target, int rows)
     {
         if (menu is not MenuWithInventory withInventory)
@@ -158,21 +156,12 @@ internal sealed class ModEntry : Mod
             return;
 
         int newTop;
-        if (menu is ItemGrabMenu grab && grab.ItemsToGrabMenu != null)
+        if (menu is ItemGrabMenu)
         {
-            // Lower box MenuWithInventory.draw(drawUpperPortion:false) draws around the backpack.
-            int boxTop = menu.yPositionOnScreen + IClickableMenu.borderWidth + IClickableMenu.spaceToClearTopBorder + 64;
-            int boxBottom = boxTop + menu.height - (IClickableMenu.borderWidth + IClickableMenu.spaceToClearTopBorder + 192);
-
-            // The chest grid sits in the box's upper region, so the backpack goes underneath it. Centre
-            // the rows in the gap between the chest grid's bottom and the box's bottom border.
-            int chestBottom = grab.ItemsToGrabMenu.yPositionOnScreen + grab.ItemsToGrabMenu.height;
-            int gridHeight = 64 * rows;
-            int topLimit = Math.Max(boxTop, chestBottom + 20);
-            int bottomLimit = boxBottom - 8;
-            newTop = topLimit + Math.Max(0, (bottomLimit - topLimit - gridHeight) / 2);
-
-            this.Monitor.Log($"chest backpack expand: menuY={menu.yPositionOnScreen} h={menu.height} boxTop={boxTop} boxBottom={boxBottom} chestBottom={chestBottom} gridH={gridHeight} -> top={newTop} (was {old.yPositionOnScreen})", LogLevel.Debug);
+            int extraHeight = (rows - 3) * 64;
+            menu.height += extraHeight;
+            this.MoveMenuButtonsDown(withInventory, extraHeight);
+            newTop = old.yPositionOnScreen;
         }
         else
         {
@@ -190,6 +179,19 @@ internal sealed class ModEntry : Mod
             rows: rows);
         rebuilt.moveItemSound = old.moveItemSound;
         withInventory.inventory = rebuilt;
+    }
+
+    /// <summary>Keep MenuWithInventory's side buttons attached to the bottom after increasing the panel height.</summary>
+    private void MoveMenuButtonsDown(MenuWithInventory menu, int delta)
+    {
+        if (delta == 0)
+            return;
+
+        if (menu.okButton != null)
+            menu.okButton.bounds.Y += delta;
+
+        if (menu.trashCan != null)
+            menu.trashCan.bounds.Y += delta;
     }
 
     /// <summary>Wire up Generic Mod Config Menu if installed (optional).</summary>
