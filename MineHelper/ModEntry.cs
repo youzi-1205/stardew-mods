@@ -1,3 +1,4 @@
+using HarmonyLib;
 using Microsoft.Xna.Framework;
 using Microsoft.Xna.Framework.Graphics;
 using StardewModdingAPI;
@@ -5,6 +6,7 @@ using StardewModdingAPI.Events;
 using StardewValley;
 using StardewValley.Locations;
 using StardewValley.Objects;
+using StardewValley.Tools;
 using SObject = StardewValley.Object;
 
 namespace MineHelper;
@@ -17,6 +19,10 @@ internal sealed class ModConfig
     // Multiply the mining drops dug out of mine stones (1 = vanilla, capped at 10x).
     public float OreDropMultiplier { get; set; } = 1f;
 
+    // Flat chance (0-1) that breaking a plain mine stone drops a bonus lump of coal, on top of vanilla
+    // (0 = off, 1 = every plain stone drops coal). A direct chance, not a multiplier on vanilla's tiny ~1%.
+    public float CoalDropChance { get; set; }
+
     // Multiply the count of ore nodes spawned on each mine level (1 = vanilla, capped at 5x).
     public float OreSpawnMultiplier { get; set; } = 1f;
 
@@ -26,6 +32,9 @@ internal sealed class ModConfig
     public float GoldSpawnMultiplier { get; set; }
     public float IridiumSpawnMultiplier { get; set; }
     public float CoalSpawnMultiplier { get; set; }
+
+    // Multiply the chance of fishing up Cave Jelly in the mine's lava area, levels 80-120 (1 = vanilla, capped at 10x).
+    public float CaveJellyChanceMultiplier { get; set; } = 1f;
 }
 
 /// <summary>GMCM's API surface — only the bits we use. Resolved at runtime via the mod registry, so
@@ -57,6 +66,27 @@ internal sealed class ModEntry : Mod
         "378", "380", "384", "386", "382", "535", "536", "537", "749", "72"
     };
 
+    // Stone ids the game's GameLocation.breakStone() consumes — every ore / gem / geode / coal / special
+    // node, plus the mystic stone "44" (which breakStone remaps to a gem). checkStoneForItems early-returns
+    // on all of these BEFORE its coal roll, so vanilla never drops coal from them. Anything NOT in this set
+    // is plain rock litter (ids like 31-58, 760, 762, skull-cavern variants …) that does reach the coal
+    // roll, so the bonus-coal gate treats unknown ids as plain — which auto-covers every area's rocks.
+    private static readonly HashSet<string> CoalIneligibleStones = new()
+    {
+        "2", "4", "6", "8", "10", "12", "14",                       // gem nodes
+        "25", "44", "46", "75", "76", "77", "95", "819",            // mussel / mystic / geode / radioactive
+        "668", "670", "845", "846", "847",                          // stone-yielding decorative nodes
+        "843", "844",                                               // cinder shard nodes
+        "816", "817", "818",                                        // fossil / clay stones
+        "290", "850", "751", "849", "764", "765",                   // ore nodes
+        "BasicCoalNode0", "BasicCoalNode1",                         // coal nodes
+        "VolcanoCoalNode0", "VolcanoCoalNode1", "VolcanoGoldNode",  // volcano nodes
+        "CalicoEggStone_0", "CalicoEggStone_1", "CalicoEggStone_2"  // calico egg stones
+    };
+
+    // Set in Entry so the static Harmony postfixes can read the live config.
+    private static ModEntry? Instance;
+
     private ModConfig config = new();
     private Texture2D? pixel;
     private readonly List<Point> ladders = new();
@@ -69,11 +99,22 @@ internal sealed class ModEntry : Mod
     public override void Entry(IModHelper helper)
     {
         this.config = helper.ReadConfig<ModConfig>();
+        Instance = this;
         helper.Events.GameLoop.GameLaunched += this.OnGameLaunched;
         helper.Events.GameLoop.UpdateTicked += this.OnUpdateTicked;
         helper.Events.Player.Warped += this.OnWarped;
         helper.Events.World.DebrisListChanged += this.OnDebrisListChanged;
         helper.Events.Display.RenderedWorld += this.OnRenderedWorld;
+
+        // The coal and Cave Jelly tweaks ride on the game's own drop/catch rolls, which SMAPI exposes no
+        // event for — so they hook in via Harmony (bundled with SMAPI, no extra install for players).
+        var harmony = new Harmony(this.ModManifest.UniqueID);
+        harmony.Patch(
+            original: AccessTools.Method(typeof(MineShaft), nameof(MineShaft.checkStoneForItems)),
+            postfix: new HarmonyMethod(typeof(ModEntry), nameof(CoalDropPostfix)));
+        harmony.Patch(
+            original: AccessTools.Method(typeof(MineShaft), nameof(MineShaft.getFish)),
+            postfix: new HarmonyMethod(typeof(ModEntry), nameof(CaveJellyPostfix)));
     }
 
     private void OnWarped(object? sender, WarpedEventArgs e)
@@ -117,6 +158,14 @@ internal sealed class ModEntry : Mod
             name: () => "采矿掉落倍率",
             tooltip: () => "挖矿洞石头时矿石/煤/宝石掉落的倍率（1 = 原版，仅主机生效）。",
             min: 1f, max: 10f, interval: 0.5f);
+        gmcm.AddNumberOption(
+            this.ModManifest,
+            getValue: () => this.config.CoalDropChance,
+            setValue: v => this.config.CoalDropChance = v,
+            name: () => "采石掉煤概率",
+            tooltip: () => "敲普通矿洞石头时额外掉一块煤的概率（0% = 关闭，100% = 每块石头必掉，独立于原版掉落，仅主机生效）。",
+            min: 0f, max: 1f, interval: 0.05f,
+            formatValue: v => $"{v * 100f:0}%");
 
         gmcm.AddSectionTitle(this.ModManifest, () => "矿石刷新");
         gmcm.AddNumberOption(
@@ -161,6 +210,15 @@ internal sealed class ModEntry : Mod
             name: () => "煤矿刷新倍率",
             tooltip: () => "0 = 跟随总倍率。",
             min: 0f, max: 5f, interval: 0.5f);
+
+        gmcm.AddSectionTitle(this.ModManifest, () => "矿洞钓鱼");
+        gmcm.AddNumberOption(
+            this.ModManifest,
+            getValue: () => this.config.CaveJellyChanceMultiplier,
+            setValue: v => this.config.CaveJellyChanceMultiplier = v,
+            name: () => "洞穴凝胶钓获倍率",
+            tooltip: () => "在矿洞岩浆区（80–120 层）水中钓鱼时钓到洞穴凝胶的概率倍率（1 = 原版）。",
+            min: 1f, max: 10f, interval: 0.5f);
     }
 
     /// <summary>Mining-drop boost: for each fresh ore/coal/gem debris dug out of a mine stone, drop a
@@ -200,6 +258,70 @@ internal sealed class ModEntry : Mod
                 e.Location.debris.Add(copy);
             }
         }
+    }
+
+    /// <summary>Harmony postfix on <see cref="MineShaft.checkStoneForItems"/>: after the game settles a
+    /// broken stone, roll a flat <see cref="ModConfig.CoalDropChance"/> to drop a bonus lump of coal on top
+    /// of whatever vanilla already gave. This is a direct chance, not a multiplier on vanilla's tiny ~1%, so
+    /// players actually feel it. Only plain rock litter is eligible — every ore/gem/geode/coal/special node
+    /// is consumed by the game's <c>breakStone</c> and early-returns before the coal roll, so those are
+    /// skipped (see <see cref="CoalIneligibleStones"/>). Host-only, like the other drop boosts.</summary>
+    private static void CoalDropPostfix(MineShaft __instance, string stoneId, int x, int y, Farmer who)
+    {
+        ModConfig? cfg = Instance?.config;
+        if (cfg is null || cfg.CoalDropChance <= 0f || !Game1.IsMasterGame)
+            return;
+
+        // The coal roll only runs for plain rock; nodes the game's breakStone handles (ore/gem/geode/coal/
+        // mystic 44 …) early-return before it, so they must not receive bonus coal.
+        if (CoalIneligibleStones.Contains(StripObjectPrefix(stoneId)))
+            return;
+
+        // Flat per-stone bonus coal chance, independent of vanilla's own roll. RoundProbabilistic turns the
+        // fractional chance into 0/1 coal (and would allow >1 if the chance is ever set above 1).
+        int extra = RoundProbabilistic(cfg.CoalDropChance);
+        long whichPlayer = who?.UniqueMultiplayerID ?? 0;
+        for (int i = 0; i < extra; i++)
+            Game1.createObjectDebris("(O)382", x, y, whichPlayer, __instance);
+    }
+
+    /// <summary>Harmony postfix on <see cref="MineShaft.getFish"/>: in the mine's lava area (levels 80-120)
+    /// the game rolls Cave Jelly against junk. When the catch came back as junk (items 167-172), re-roll it
+    /// into Cave Jelly using <see cref="ModConfig.CaveJellyChanceMultiplier"/> on top of the vanilla jelly
+    /// odds. Only junk is upgraded, so a Lava Eel or any genuine fish is never replaced.</summary>
+    private static void CaveJellyPostfix(MineShaft __instance, Farmer who, ref Item __result)
+    {
+        ModConfig? cfg = Instance?.config;
+        if (cfg is null || cfg.CaveJellyChanceMultiplier <= 1f || who is null || __result is null)
+            return;
+
+        // Cave Jelly only exists in the lava area; don't conjure it on the upper floors.
+        if (__instance.getMineArea() != 80)
+            return;
+
+        // Vanilla short-circuits Training Rod catches to junk before the jelly roll, so it can never land
+        // Cave Jelly — mirror that and leave Training Rod junk alone.
+        if (who.CurrentTool is FishingRod rod && rod.QualifiedItemId.Contains("TrainingRod"))
+            return;
+
+        // Only the junk outcomes the jelly roll competes with (Joja Cola … Soggy Newspaper) get upgraded.
+        switch (StripObjectPrefix(__result.ItemId))
+        {
+            case "167":
+            case "168":
+            case "169":
+            case "170":
+            case "171":
+            case "172":
+                break;
+            default:
+                return;
+        }
+
+        // Vanilla jelly chance is 0.05 + LuckLevel*0.05; scale the *extra* chance by the multiplier.
+        double vanillaJellyChance = 0.05 + (who.LuckLevel * 0.05);
+        if (Game1.random.NextDouble() < vanillaJellyChance * (cfg.CaveJellyChanceMultiplier - 1f))
+            __result = ItemRegistry.Create("(O)CaveJelly", 1, __result.Quality);
     }
 
     /// <summary>Ore-spawn boost: count the ore nodes the game already placed on this level and add more
