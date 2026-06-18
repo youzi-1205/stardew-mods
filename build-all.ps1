@@ -3,6 +3,7 @@ $ErrorActionPreference = "Stop"
 $root = Split-Path -Parent $MyInvocation.MyCommand.Path
 $mods = @(
     "AutoFish",
+    "AutoSort",
     "AutoWalk",
     "BiggerBackpack",
     "BirthdayGiftReminder",

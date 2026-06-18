@@ -1,0 +1,10 @@
+{
+  "Name": "自动整理",
+  "Author": "youzi",
+  "Version": "1.0.0",
+  "Description": "一键把所有箱子的物品按类别归整：同类集中到同一个箱子，零散堆自动合并。箱子归属由 mod 按现有内容智能认领，无需手动设置。",
+  "UniqueID": "Codex.AutoSort",
+  "EntryDll": "AutoSort.dll",
+  "MinimumApiVersion": "4.0.0",
+  "UpdateKeys": []
+}
