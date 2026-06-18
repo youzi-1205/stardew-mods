@@ -611,7 +611,10 @@ internal sealed class FarmhandHelper
 
         var responses = new List<Response>();
         if (crops > 0)
-            responses.Add(new Response("crops", $"照料附近庄稼（{crops} 处：浇水/收获/补种）"));
+        {
+            string cropActions = this.config().HelperReplants ? "浇水/收获/补种" : "浇水/收获";
+            responses.Add(new Response("crops", $"照料附近庄稼（{crops} 处：{cropActions}）"));
+        }
         if (machines > 0)
             responses.Add(new Response("machines", $"收取机器产物（{machines} 处）"));
         if (animals > 0)
@@ -1410,7 +1413,8 @@ internal sealed class FarmhandHelper
             {
                 TaskKind.Water => dirt.crop != null && !dirt.crop.dead.Value && dirt.state.Value != HoeDirt.watered && dirt.needsWatering(),
                 TaskKind.Harvest => dirt.readyForHarvest(),
-                TaskKind.Fertilize => dirt.crop != null && string.IsNullOrEmpty(dirt.fertilizer.Value) && dirt.crop.currentPhase.Value == 0,
+                TaskKind.Fertilize => dirt.crop != null && string.IsNullOrEmpty(dirt.fertilizer.Value) && dirt.crop.currentPhase.Value == 0
+                    && task.ItemId != null && GetFarmChests(farm).Any(c => c.Items.CountId(task.ItemId) > 0),
                 TaskKind.Plant => dirt.crop == null,
                 _ => false,
             };

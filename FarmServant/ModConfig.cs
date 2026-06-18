@@ -9,7 +9,8 @@ internal sealed class ModConfig
     public string HelperName { get; set; } = "鹏神";
 
     // The helper replants harvested crops when matching seeds are found in chests.
-    public bool HelperReplants { get; set; } = true;
+    // Default off: sowing is the player's job; the helper only handles everything else.
+    public bool HelperReplants { get; set; } = false;
 
     // The helper picks the best fertilizer from chests for each crop based on value and time left.
     public bool HelperFertilizes { get; set; } = true;
