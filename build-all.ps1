@@ -4,9 +4,11 @@ $root = Split-Path -Parent $MyInvocation.MyCommand.Path
 $mods = @(
     "AutoFish",
     "AutoWalk",
+    "BiggerBackpack",
     "BirthdayGiftReminder",
     "ChestHub",
     "FarmServant",
+    "MineHelper",
     "NoTerminal"
 )
 
