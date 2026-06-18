@@ -1,0 +1,13 @@
+{
+  "Name": "砍树割草倍率",
+  "Author": "youzi",
+  "Version": "0.1.0",
+  "Description": "提高砍树、割草的掉落倍率，可通过 GMCM 在游戏内调节。野外采集物的倍率将在后续版本加入。不涉及矿石采掘（采矿掉落请用矿洞向导）。",
+  "UniqueID": "Codex.HarvestBounty",
+  "EntryDll": "HarvestBounty.dll",
+  "MinimumApiVersion": "4.0.0",
+  "UpdateKeys": [],
+  "Dependencies": [
+    { "UniqueID": "spacechase0.GenericModConfigMenu", "IsRequired": false }
+  ]
+}

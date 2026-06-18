@@ -9,6 +9,7 @@ $mods = @(
     "BirthdayGiftReminder",
     "ChestHub",
     "FarmServant",
+    "HarvestBounty",
     "MineHelper",
     "NoTerminal"
 )
